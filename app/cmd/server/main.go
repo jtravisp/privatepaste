@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/joho/godotenv"
 	appconfig "github.com/jtravisp/privatepaste/internal/config"
+	"github.com/jtravisp/privatepaste/internal/handler"
 	"github.com/jtravisp/privatepaste/internal/store"
 )
 
@@ -29,11 +30,13 @@ func main() {
 		log.Fatalf("failed to load AWS config: %v", err)
 	}
 
+	mux := http.NewServeMux()
 	dynamoClient := dynamodb.NewFromConfig(awsCfg)
 	store := store.NewDynamo(dynamoClient, cfg.TableName)
-	_ = store // temporary to avoid unused variable error
-
-	mux := http.NewServeMux()
+	pasteHandler := handler.NewPasteHandler(store)
+	mux.HandleFunc("POST /pastes", pasteHandler.CreatePaste)
+	mux.HandleFunc("DELETE /pastes/{id}", pasteHandler.DeletePaste)
+	mux.HandleFunc("GET /pastes/{id}", pasteHandler.GetPaste)
 	mux.HandleFunc("GET /health", healthCheck)
 
 	log.Println("starting server on :" + cfg.Port)

@@ -47,7 +47,7 @@ func (s *DynamoStore) GetPaste(id string) (*model.Paste, error) {
 	result, err := s.client.GetItem(context.TODO(), &dynamodb.GetItemInput{
 		TableName: aws.String(s.tableName),
 		Key: map[string]types.AttributeValue{
-			"ID": &types.AttributeValueMemberS{Value: id},
+			"id": &types.AttributeValueMemberS{Value: id},
 		},
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func (s *DynamoStore) DeletePaste(id string) error {
 	_, err := s.client.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
 		TableName: aws.String(s.tableName),
 		Key: map[string]types.AttributeValue{
-			"ID": &types.AttributeValueMemberS{Value: id},
+			"id": &types.AttributeValueMemberS{Value: id},
 		},
 	})
 	if err != nil {

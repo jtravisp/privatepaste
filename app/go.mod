@@ -25,4 +25,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.21 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
+	github.com/matoous/go-nanoid/v2 v2.1.0 // indirect
 )
