@@ -1,2 +1,276 @@
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
 
+:root {
+    --bg:         #0a0e1a;
+    --surface:    #111827;
+    --border:     #1f2937;
+    --text:       #f1f5f9;
+    --muted:      #64748b;
+    --accent:     #3b9eff;
+    --accent-dim: #1d4ed8;
+    --warning:    #f59e0b;
+    --error:      #ef4444;
+}
 
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+}
+
+#app {
+    width: 100%;
+    max-width: 680px;
+}
+
+/* Header */
+header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 2.5rem;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+}
+
+.tagline {
+    font-size: 0.875rem;
+    color: var(--muted);
+    margin-top: 0.25rem;
+}
+
+/* Views */
+.view {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Textarea */
+textarea {
+    width: 100%;
+    min-height: 280px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.9rem;
+    padding: 1rem;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+textarea:focus {
+    border-color: var(--accent);
+}
+
+/* Controls row */
+.controls {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.875rem;
+    padding: 0.5rem 0.75rem;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+select:focus {
+    border-color: var(--accent);
+}
+
+/* Buttons */
+button {
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 600;
+    padding: 0.5rem 1.25rem;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+
+button:hover {
+    background: var(--accent-dim);
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#create-btn {
+    margin-left: auto;
+}
+
+/* Created view */
+h2 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.copy-row {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.copy-row input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.85rem;
+    padding: 0.5rem 0.75rem;
+    outline: none;
+}
+
+.copy-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-weight: 500;
+}
+
+.copy-btn:hover {
+    background: var(--border);
+}
+
+/* Paste view */
+pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    overflow-x: auto;
+    padding: 1.25rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Delete section */
+#delete-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: flex-start;
+}
+
+#show-delete-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-weight: 500;
+}
+
+#show-delete-btn:hover {
+    border-color: var(--error);
+    color: var(--error);
+    background: transparent;
+}
+
+#delete-form {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+#delete-token-input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.875rem;
+    padding: 0.5rem 0.75rem;
+    outline: none;
+    width: 320px;
+}
+
+#delete-token-input:focus {
+    border-color: var(--error);
+}
+
+#confirm-delete-btn {
+    background: var(--error);
+}
+
+#confirm-delete-btn:hover {
+    background: #dc2626;
+}
+
+/* Status messages */
+.warning {
+    color: var(--warning);
+    font-size: 0.85rem;
+}
+
+.error {
+    color: var(--error);
+    font-size: 0.85rem;
+}
+
+#new-paste-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    align-self: flex-start;
+}
+
+#new-paste-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: transparent;
+}

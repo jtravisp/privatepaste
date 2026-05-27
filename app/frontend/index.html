@@ -1,1 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrivatePaste</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
 
+        <header>
+            <span class="logo">PrivatePaste</span>
+            <span class="tagline">End-to-end encrypted. The server never sees your text.</span>
+        </header>
+
+        <!-- View 1: Create -->
+        <section id="view-create" class="view">
+            <textarea id="paste-input" placeholder="Paste your text here..."></textarea>
+            <div class="controls">
+                <select id="expiry-select">
+                    <option value="burn">Burn after reading</option>
+                    <option value="1h">1 hour</option>
+                    <option value="24h" selected>24 hours</option>
+                    <option value="7d">7 days</option>
+                    <option value="never">Never</option>
+                </select>
+                <button id="create-btn">Create paste</button>
+            </div>
+            <p id="create-error" class="error hidden"></p>
+        </section>
+
+        <!-- View 2: Created -->
+        <section id="view-created" class="view hidden">
+            <h2>Your paste is ready</h2>
+            <div class="field-group">
+                <label>Share link</label>
+                <div class="copy-row">
+                    <input id="share-url" type="text" readonly>
+                    <button class="copy-btn" data-target="share-url">Copy</button>
+                </div>
+            </div>
+            <div class="field-group">
+                <label>Delete token</label>
+                <div class="copy-row">
+                    <input id="owner-token" type="text" readonly>
+                    <button class="copy-btn" data-target="owner-token">Copy</button>
+                </div>
+                <p class="warning">Save this token now — it won't be shown again. You'll need it to delete the paste.</p>
+            </div>
+            <button id="new-paste-btn">Create another</button>
+        </section>
+
+        <!-- View 3: View paste -->
+        <section id="view-paste" class="view hidden">
+            <p id="burn-notice" class="warning hidden">This was a burn-after-reading paste. It has been deleted.</p>
+            <pre id="paste-content"></pre>
+            <div id="delete-section">
+                <button id="show-delete-btn">Delete this paste</button>
+                <div id="delete-form" class="hidden">
+                    <input id="delete-token-input" type="text" placeholder="Enter your delete token">
+                    <button id="confirm-delete-btn">Confirm delete</button>
+                    <p id="delete-error" class="error hidden"></p>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
