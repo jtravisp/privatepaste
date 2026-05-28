@@ -30,12 +30,7 @@ function showView(name) {
 }
 
 // 3. Router (runs on DOMContentLoaded)
-// pathname === '/'       → showView('create')
-// pathname === '/{id}'  → this is a paste URL
-    // has hash (#key=…) → loadPaste(id, key)   ← function we'll write
-    // no hash           → show an error (can't decrypt without the key)
-
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const path = window.location.pathname
 
     if (path === '/') {
@@ -46,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const keyRaw = params.get('key')
         
         if (keyRaw) {
-            loadPaste(id, keyRaw)
+            await loadPaste(id, keyRaw)
         } else {
             showView('paste')
             el.pasteContent.textContent = 'Error: missing decryption key.'
@@ -54,18 +49,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 })
 
-function loadPaste(id, key) {
-    console.log('Loading paste', id, 'with key', key)
-    // 1. Fetch paste data from API (GET /api/paste/{id})
-    // 2. Decode base64url ciphertext and IV
-    // 3. Use Web Crypto API to decrypt ciphertext with key and IV
-    // 4. Display decrypted content in pasteContent element
-    // 5. If BurnAfterRead, show burnNotice and hide pasteContent until user clicks "Show Paste"
+async function loadPaste(id, keyRaw) {
+    showView('paste')
+    try {
+        const key = await importKey(keyRaw)
+        const data = await getPaste(id)
+        const plaintext = await decrypt(key, data.ciphertext, data.iv)
+
+        el.pasteContent.textContent = plaintext
+
+        if (data.burn_after_read) {
+            el.burnNotice.classList.remove('hidden')
+            document.getElementById('delete-section').classList.add('hidden')
+        }
+    } catch (err) {
+        el.pasteContent.textContent = 'Error: could not load or decrypt paste.'
+        console.error(err)
+    }
 }
 
 // 4. Crypto helpers
 function bufToBase64(buf) {
-    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    let binary = ''
+    const bytes = new Uint8Array(buf)
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i])
+    }
+    return btoa(binary)
 }
 
 function base64ToBuf(b64) {
@@ -105,6 +115,22 @@ async function decrypt(key, ciphertext, iv) {
     return new TextDecoder().decode(plaintext)
 }
 
+async function exportKey(key) {
+    const raw = await crypto.subtle.exportKey('raw', key)
+    return bufToBase64(raw)
+}
+
+async function importKey(b64) {
+    const raw = base64ToBuf(b64)
+    return crypto.subtle.importKey(
+        'raw',
+        raw,
+        { name: 'AES-GCM' },
+        false,          // not extractable once imported
+        ['decrypt']
+    )
+}
+
 // 5. API helpers
 async function createPaste(ciphertext, iv, burnAfterRead, expiry) {
     const res = await fetch('/pastes', {
@@ -132,10 +158,26 @@ async function deletePaste(id, ownerToken) {
 
 // 6. Event handlers
 el.createBtn.addEventListener('click', async () => {
-    // implement create paste flow:
-    // 1. Generate random key
-    // 2. Encrypt pasteInput.value with key, get ciphertext and IV
-    // 3. Call createPaste API helper with ciphertext, IV, burnAfterRead, expiry
-    // 4. Show created view with share URL (including key in hash) and owner token
-})
+    el.createError.classList.add('hidden')
+    el.createError.textContent = ''
 
+    try {
+        const plaintext = el.pasteInput.value.trim()
+        if (!plaintext) throw new Error('Paste content cannot be empty.')
+
+        const expiry = el.expirySelect.value
+        const burnAfterRead = expiry === 'burn'
+
+        const key = await generateKey()
+        const { ciphertext, iv } = await encrypt(key, plaintext)
+        const { id, owner_token } = await createPaste(ciphertext, iv, burnAfterRead, expiry)
+        const keyB64 = await exportKey(key)
+
+        el.shareUrl.value = `${window.location.origin}/${id}#key=${keyB64}`
+        el.ownerToken.value = owner_token
+        showView('created') 
+    } catch (err) {
+        el.createError.textContent = err.message
+        el.createError.classList.remove('hidden')
+    }
+})
