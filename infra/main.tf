@@ -27,3 +27,16 @@ module "networking" {
   vpc_cidr = var.vpc_cidr
   project_name = var.project_name
 }
+
+module "dynamodb" {
+  source = "./modules/dynamo"
+
+  table_name = var.table_name
+  project_name = var.project_name
+} 
+
+module "ecr" {
+  source = "./modules/ecr"
+
+  project_name = var.project_name
+} 

@@ -46,7 +46,7 @@ terraform.rc
 # Go
 
 # compiled binary
-app/cmd/server/server
+app/server
 
 # test cache and coverage output
 *.test
@@ -80,3 +80,5 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+server
