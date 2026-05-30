@@ -11,10 +11,6 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.0"
-    }
   }
 
   required_version = ">= 1.11.0"
@@ -23,4 +19,11 @@ terraform {
 provider "aws" {
   region  = var.aws_region
   profile = "privatepaste"
+}
+
+module "networking" {
+  source = "./modules/networking"
+
+  vpc_cidr = var.vpc_cidr
+  project_name = var.project_name
 }

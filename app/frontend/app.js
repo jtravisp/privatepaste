@@ -23,6 +23,8 @@ const el = {
     deleteError:  document.getElementById('delete-error')
 }
 
+let currentPasteId = null
+
 // 2. View helpers
 function showView(name) {
     Object.values(views).forEach(v => v.classList.add('hidden'))
@@ -55,6 +57,7 @@ async function loadPaste(id, keyRaw) {
         const key = await importKey(keyRaw)
         const data = await getPaste(id)
         const plaintext = await decrypt(key, data.ciphertext, data.iv)
+        currentPasteId = id
 
         el.pasteContent.textContent = plaintext
 
@@ -182,18 +185,38 @@ el.createBtn.addEventListener('click', async () => {
     }
 })
 
-el.newPasteBtn.addEventListener('click', async () => {
-    
+el.newPasteBtn.addEventListener('click', () => {
+    el.createError.classList.add('hidden')
+    el.createError.textContent = ''
+    el.pasteInput.value = ''
+    el.expirySelect.value = '24h'
+    showView('create')
 })
 
-el.copyBtns.addEventListener('click', async () => {
-
+el.copyBtns.forEach(btn => {
+    btn.addEventListener('click', async () => {
+        try {
+            const targetId = btn.dataset.target
+            const targetInput = document.getElementById(targetId)
+            targetInput.select()
+            await navigator.clipboard.writeText(targetInput.value)
+        } catch (err) {
+            console.error('Clipboard not supported or permission denied.', err)
+        }
+    })
 })
 
-el.showDeleteBtn.addEventListener('click', async () => {
-
+el.showDeleteBtn.addEventListener('click', () => {
+    el.deleteError.classList.add('hidden')
+    el.deleteForm.classList.remove('hidden')
 })
 
 el.confirmDeleteBtn.addEventListener('click', async () => {
-
+    try {
+        await deletePaste(currentPasteId, el.deleteTokenInput.value)
+        showView('create')
+    } catch (err) {
+        el.deleteError.textContent = err.message
+        el.deleteError.classList.remove('hidden')
+    }
 })
