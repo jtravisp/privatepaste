@@ -181,3 +181,19 @@ el.createBtn.addEventListener('click', async () => {
         el.createError.classList.remove('hidden')
     }
 })
+
+el.newPasteBtn.addEventListener('click', async () => {
+    
+})
+
+el.copyBtns.addEventListener('click', async () => {
+
+})
+
+el.showDeleteBtn.addEventListener('click', async () => {
+
+})
+
+el.confirmDeleteBtn.addEventListener('click', async () => {
+
+})

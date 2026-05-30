@@ -6,7 +6,7 @@ A zero-knowledge encrypted text vault. The server stores only ciphertext — it 
 
 Encryption happens in the browser using the Web Crypto API (AES-256-GCM). The encryption key is generated client-side, appended to the share URL as a fragment (`#key=...`), and never transmitted to the server. The server receives and stores only the encrypted payload and IV. Decryption happens client-side on retrieval.
 
-Pastes support configurable expiry (burn after read, 1h, 24h, 7d, or no expiry) and optional password protection as a second encryption layer. No accounts, no login.
+Pastes support configurable expiry (burn after read, 1h, 24h, 7d, or no expiry). No accounts, no login.
 
 ## Architecture
 
@@ -36,19 +36,20 @@ DynamoDB table: `pastes`
 
 | Attribute | Type | Notes |
 |---|---|---|
-| `ID` | String (PK) | nanoid — short, URL-safe |
-| `Ciphertext` | String | AES-256-GCM encrypted content, base64 |
-| `IV` | String | AES-GCM nonce, base64 |
-| `OwnerTokenHash` | String | SHA-256 of owner token |
-| `BurnAfterRead` | Boolean | Delete on first retrieval |
-| `TTL` | Number | Unix timestamp — DynamoDB native TTL |
-| `CreatedAt` | Number | Unix timestamp |
+| `id` | String (PK) | nanoid — short, URL-safe |
+| `ciphertext` | String | AES-256-GCM encrypted content, base64 |
+| `iv` | String | AES-GCM nonce, base64 |
+| `owner_token_hash` | String | SHA-256 of owner token |
+| `burn_after_read` | Boolean | Delete on first retrieval |
+| `ttl` | Number | Unix timestamp — DynamoDB native TTL |
+| `created_at` | Number | Unix timestamp |
 
 ## Structure
 
 ```
 privatepaste/
 ├── app/
+│   ├── assets.go
 │   ├── cmd/server/main.go
 │   ├── internal/
 │   │   ├── config/config.go
