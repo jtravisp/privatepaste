@@ -1,7 +1,7 @@
 variable "table_name" {
    description = "Name of the DynamoDB table"
    type        = string
-   default     = "privatepaste-prod"
+   default     = ""
 }
 
 variable "project_name" {

@@ -1,6 +1,6 @@
 # PrivatePaste
 
-A zero-knowledge encrypted text vault. The server stores only ciphertext — it has no access to paste content, ever.
+A zero-knowledge encrypted text vault. The server stores only ciphertext. It has no access to paste content.
 
 ## How it works
 
