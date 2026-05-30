@@ -5,15 +5,16 @@
 }
 
 :root {
-    --bg:         #0a0e1a;
-    --surface:    #111827;
-    --border:     #1f2937;
-    --text:       #f1f5f9;
-    --muted:      #64748b;
-    --accent:     #3b9eff;
-    --accent-dim: #1d4ed8;
-    --warning:    #f59e0b;
-    --error:      #ef4444;
+    --bg:         #f7f3eb;
+    --surface:    #ede8d5;
+    --border:     #c8b99a;
+    --text:       #2c2010;
+    --muted:      #7a6545;
+    --accent:     #2c5f8a;
+    --accent-dim: #1a3f5e;
+    --warning:    #9a6b10;
+    --error:      #b03030;
+    --success:    #2d6a2d;
 }
 
 body {
@@ -260,6 +261,20 @@ pre {
 .error {
     color: var(--error);
     font-size: 0.85rem;
+}
+
+.success {
+    color: var(--success);
+    font-size: 0.85rem;
+}
+
+footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.6;
 }
 
 #new-paste-btn {

@@ -20,7 +20,8 @@ const el = {
     deleteForm:   document.getElementById('delete-form'),
     deleteTokenInput: document.getElementById('delete-token-input'),
     confirmDeleteBtn: document.getElementById('confirm-delete-btn'),
-    deleteError:  document.getElementById('delete-error')
+    deleteError:  document.getElementById('delete-error'),
+    createSuccess : document.getElementById('create-success')
 }
 
 let currentPasteId = null
@@ -40,7 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
         const id = path.slice(1)
         const params = new URLSearchParams(window.location.hash.slice(1))
-        const keyRaw = params.get('key')
+        const keyRaw = decodeURIComponent(params.get('key'))
         
         if (keyRaw) {
             await loadPaste(id, keyRaw)
@@ -176,7 +177,7 @@ el.createBtn.addEventListener('click', async () => {
         const { id, owner_token } = await createPaste(ciphertext, iv, burnAfterRead, expiry)
         const keyB64 = await exportKey(key)
 
-        el.shareUrl.value = `${window.location.origin}/${id}#key=${keyB64}`
+        el.shareUrl.value = `${window.location.origin}/${id}#key=${encodeURIComponent(keyB64)}`
         el.ownerToken.value = owner_token
         showView('created') 
     } catch (err) {
@@ -191,6 +192,7 @@ el.newPasteBtn.addEventListener('click', () => {
     el.pasteInput.value = ''
     el.expirySelect.value = '24h'
     showView('create')
+    el.createSuccess.classList.add('hidden')
 })
 
 el.copyBtns.forEach(btn => {
@@ -215,6 +217,8 @@ el.confirmDeleteBtn.addEventListener('click', async () => {
     try {
         await deletePaste(currentPasteId, el.deleteTokenInput.value)
         showView('create')
+        el.createSuccess.classList.remove('hidden')
+        el.createSuccess.textContent = 'Paste deleted successfully.'
     } catch (err) {
         el.deleteError.textContent = err.message
         el.deleteError.classList.remove('hidden')

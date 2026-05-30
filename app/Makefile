@@ -12,7 +12,7 @@ build:
 	go build -o server ./cmd/server
 
 run:
-	export $(cat .env | xargs) && ./server
+	set -a && . ./.env && set +a && ./server
 
 docker-build:
 	docker build -t server .

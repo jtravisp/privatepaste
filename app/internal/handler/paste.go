@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ func (h *PasteHandler) CreatePaste(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.CreatePaste(paste); err != nil {
+		log.Printf("CreatePaste error: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to save paste")
 		return
 	}

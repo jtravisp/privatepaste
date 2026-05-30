@@ -23,9 +23,11 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 func main() {
 	godotenv.Load()
 	cfg := appconfig.Load()
+	log.Printf("config: table=%s region=%s profile=%s", cfg.TableName, cfg.Region, cfg.AWSProfile)
 
 	awsCfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(cfg.Region),
+		config.WithSharedConfigProfile(cfg.AWSProfile),
 	)
 
 	if err != nil {
