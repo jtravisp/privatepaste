@@ -11,6 +11,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
   }
 
   required_version = ">= 1.11.0"
@@ -19,6 +23,10 @@ terraform {
 provider "aws" {
   region  = var.aws_region
   profile = "privatepaste"
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 module "networking" {
@@ -46,6 +54,8 @@ module "iam" {
 
   project_name = var.project_name
   table_arn    = module.dynamodb.table_arn
+  github_repo = var.github_repo
+  ecr_repository_arn = module.ecr.repository_arn
 } 
 
 module "ecs" {

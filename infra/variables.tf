@@ -36,3 +36,14 @@ variable "hosted_zone_id" {
   description = "Route 53 hosted zone ID for the domain"
   type        = string
 }
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_repo" {
+  description = "GitHub repository for the application (owner/repo)"
+  type        = string
+}

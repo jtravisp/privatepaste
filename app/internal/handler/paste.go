@@ -65,6 +65,7 @@ func expiryTTL(expiry string) int64 {
 }
 
 func (h *PasteHandler) CreatePaste(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
 	var req CreatePasteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
