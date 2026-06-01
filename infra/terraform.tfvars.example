@@ -1,0 +1,7 @@
+aws_region = "region"
+vpc_cidr = "10.0.0.0/16"
+project_name = "project_name"
+table_name = "table_name-prod"    
+domain_name    = "domain.com"
+cloudflare_api_token = "<token>"
+github_repo = "<username>/<repo_name>"

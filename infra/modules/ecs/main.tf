@@ -93,6 +93,11 @@ resource "aws_ecs_service" "main" {
     assign_public_ip = true
   }
 
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   lifecycle {
     ignore_changes = [task_definition]
 }
