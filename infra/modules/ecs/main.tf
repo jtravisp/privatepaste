@@ -62,8 +62,12 @@ resource "aws_ecs_task_definition" "main" {
           value = "8080"
         },
        ]
-    }
+    },
   ])
+     
+  lifecycle {
+      ignore_changes = [container_definitions]
+  }
 
   tags = {
     Name = "${var.project_name}-task-definition"
@@ -88,6 +92,10 @@ resource "aws_ecs_service" "main" {
     security_groups = [var.ecs_tasks_security_group_id]
     assign_public_ip = true
   }
+
+  lifecycle {
+    ignore_changes = [task_definition]
+}
 
   tags = {
     Name = "${var.project_name}-service"

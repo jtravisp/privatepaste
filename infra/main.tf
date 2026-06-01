@@ -62,9 +62,9 @@ module "ecs" {
   source = "./modules/ecs"
 
   project_name = var.project_name
-  app_image = "${module.ecr.repository_url}:${var.image_tag}"  
   aws_region = var.aws_region
   subnet_ids = module.networking.subnet_ids
+  app_image = "${module.ecr.repository_url}:placeholder"
   ecs_tasks_security_group_id = module.networking.ecs_tasks_security_group_id
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn = module.iam.ecs_task_role_arn
@@ -77,7 +77,6 @@ module "dns" {
 
   project_name   = var.project_name
   domain_name    = var.domain_name
-  hosted_zone_id = var.hosted_zone_id
 }
 
 module "alb" {
@@ -88,16 +87,4 @@ module "alb" {
   alb_security_group_id = module.networking.alb_security_group_id
   vpc_id                = module.networking.vpc_id
   certificate_arn       = module.dns.certificate_arn
-}
-
-resource "aws_route53_record" "main" {
-  zone_id = var.hosted_zone_id
-  name    = var.domain_name
-  type    = "A"
-
-  alias {
-    name                   = module.alb.alb_dns_name
-    zone_id                = module.alb.alb_zone_id
-    evaluate_target_health = true
-  }
 }

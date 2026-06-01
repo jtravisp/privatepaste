@@ -30,6 +30,18 @@ Pastes support configurable expiry (burn after read, 1h, 24h, 7d, or no expiry).
 
 **`burn_after_read` is handled by the handler.** `GetPaste` retrieves and returns a paste unconditionally. If the paste has `BurnAfterRead: true`, the handler calls `DeletePaste` after a successful retrieval. This keeps the store's behavior predictable and makes the burn logic easy to reason about in isolation.
 
+**Request body size is capped.** CreatePaste wraps r.Body with http.MaxBytesReader before decoding, limiting payloads to 512KB. Oversized requests are rejected at the HTTP layer before touching DynamoDB.
+
+## Deployment
+
+Built and pushed to ECR manually or via GitHub Actions CI. The ECS service runs task definition on Fargate.
+
+To deploy a new image manually:
+
+1. Build and push to ECR with a new tag (tags are immutable — `latest` cannot be overwritten)
+2. Register a new task definition revision pointing at the new image tag
+3. Update the service: `aws ecs update-service --cluster privatepaste-cluster --service privatepaste-service --task-definition <project_name>-task:<revision> --force-new-deployment`
+
 ## Data model
 
 DynamoDB table: `pastes`

@@ -61,10 +61,14 @@ resource "aws_route_table_association" "main" {
 }
 
 resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-sg"
+  name_prefix        = "${var.project_name}-sg"
   description = "Allow traffic from Cloudflare only"
   vpc_id      = aws_vpc.main.id
 
+  lifecycle {
+    create_before_destroy = true
+  }
+  
   ingress {
     from_port   = 80
     to_port     = 80

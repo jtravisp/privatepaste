@@ -21,19 +21,8 @@ variable "table_name" {
    default     = ""
 }  
 
-variable "image_tag" {
-   description = "Tag for the Docker image to deploy"
-   type        = string
-   default     = "v1"
-}
-
 variable "domain_name" {
   description = "Domain name for the application"
-  type        = string
-}
-
-variable "hosted_zone_id" {
-  description = "Route 53 hosted zone ID for the domain"
   type        = string
 }
 
