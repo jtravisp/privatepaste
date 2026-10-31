@@ -1,0 +1,34 @@
+# Production-ish: the image from GHCR, the real DynamoDB table, and the
+# Cloudflare Tunnel connector.
+#
+# The deploy workflow pins the image to the commit being deployed:
+#   kustomize edit set image privatepaste=ghcr.io/jtravisp/privatepaste:sha-<commit>
+# `latest` below is only the value committed to git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Also places the tunnel component's resources in the namespace.
+namespace: privatepaste
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/tunnel
+
+images:
+  - name: privatepaste
+    newName: ghcr.io/jtravisp/privatepaste
+    newTag: latest
+
+patches:
+  - target:
+      kind: Deployment
+      name: privatepaste
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: TABLE_NAME, value: privatepaste-prod}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: ENV, value: prod}

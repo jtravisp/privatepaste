@@ -1,0 +1,15 @@
+# ClusterIP only: reachable inside the cluster, never directly from the
+# internet. cloudflared reaches it as
+# http://privatepaste.privatepaste.svc.cluster.local (see infra/persistent/cloudflare.tf).
+apiVersion: v1
+kind: Service
+metadata:
+  name: privatepaste
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: privatepaste
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

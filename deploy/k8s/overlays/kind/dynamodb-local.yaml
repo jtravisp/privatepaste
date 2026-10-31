@@ -1,0 +1,47 @@
+# AWS's DynamoDB emulator, in memory. Data disappears when the pod restarts,
+# which is what you want from a local test database.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamodb-local
+  labels:
+    app.kubernetes.io/name: dynamodb-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dynamodb-local
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dynamodb-local
+    spec:
+      containers:
+        - name: dynamodb-local
+          image: amazon/dynamodb-local:3.3.2
+          args: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+          ports:
+            - name: dynamodb
+              containerPort: 8000
+          readinessProbe:
+            tcpSocket:
+              port: dynamodb
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamodb-local
+spec:
+  selector:
+    app.kubernetes.io/name: dynamodb-local
+  ports:
+    - name: dynamodb
+      port: 8000
+      targetPort: dynamodb

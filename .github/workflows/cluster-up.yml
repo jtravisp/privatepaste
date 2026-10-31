@@ -1,0 +1,72 @@
+# Start a session: create the EKS cluster and deploy main's image to it.
+# Takes ~15 minutes. Running it again while a cluster exists is safe: it
+# moves the expiry forward and redeploys -- that is how you extend a session.
+name: cluster-up
+
+on:
+  workflow_dispatch:
+    inputs:
+      ttl_minutes:
+        description: Minutes until the reaper destroys the cluster (30-480).
+        type: string
+        default: "150"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    if: github.ref == 'refs/heads/main' # the AWS role only trusts main anyway
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # Shared with cluster-down and the reaper: apply and destroy never overlap.
+    concurrency:
+      group: eks-terraform
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infra/eks
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::612529366989:role/privatepaste-gha-deploy
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.3
+          terraform_wrapper: false
+
+      # The input reaches the shell through an env var, never interpolated
+      # into the script, so it cannot inject commands. Then it is validated.
+      - name: Compute expiry
+        id: expiry
+        env:
+          TTL: ${{ inputs.ttl_minutes }}
+        run: |
+          if ! [[ "$TTL" =~ ^[0-9]+$ ]] || [ "$TTL" -lt 30 ] || [ "$TTL" -gt 480 ]; then
+            echo "::error::ttl_minutes must be a whole number from 30 to 480"; exit 1
+          fi
+          expires=$(date -u -d "+${TTL} minutes" +%Y-%m-%dT%H:%M:%SZ)
+          echo "expires_at=$expires" >> "$GITHUB_OUTPUT"
+          echo "### Cluster expires at $expires (UTC)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        run: terraform apply -input=false -auto-approve -lock-timeout=20m -var "expires_at=${{ steps.expiry.outputs.expires_at }}"
+
+  deploy:
+    needs: terraform
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image_tag: sha-${{ github.sha }}

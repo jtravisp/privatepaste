@@ -289,3 +289,9 @@ footer {
     color: var(--accent);
     background: transparent;
 }
+
+/* Was an inline style attribute; moved here so the CSP can forbid inline styles. */
+.logo-icon {
+    vertical-align: -3px;
+    margin-right: 6px;
+}

@@ -1,0 +1,18 @@
+# What every environment runs: the app's Deployment, Service, service account
+# and disruption budget. Overlays (eks, kind) add environment specifics.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: privatepaste
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: privatepaste
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
