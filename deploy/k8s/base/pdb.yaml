@@ -1,0 +1,12 @@
+# Voluntary disruptions (a node drain during a node group update, for example)
+# may evict only one replica at a time. Spot reclamation is involuntary and
+# ignores this; the topology spread is what limits the damage there.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: privatepaste
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: privatepaste

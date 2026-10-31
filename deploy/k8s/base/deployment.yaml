@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: privatepaste
+  labels:
+    app.kubernetes.io/name: privatepaste
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: privatepaste
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Start a new pod and wait for it to be Ready before removing an old
+      # one: a deploy never drops capacity below two.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: privatepaste
+    spec:
+      serviceAccountName: privatepaste
+      # Must exceed the app's SHUTDOWN_DELAY plus its drain timeout, or the
+      # kubelet SIGKILLs it mid-drain.
+      terminationGracePeriodSeconds: 30
+      # Prefer one replica per node, so losing a Spot node loses one pod, not
+      # both. "ScheduleAnyway" keeps a single-node kind cluster working.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: privatepaste
+      containers:
+        - name: app
+          # Placeholder; each overlay sets the real image with `images:`.
+          image: privatepaste
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: AWS_REGION
+              value: us-east-1
+            - name: SHUTDOWN_DELAY
+              value: 5s
+          # Readiness: "send me traffic". Fails if DynamoDB is unreachable or
+          # the pod is shutting down; the pod is removed from the Service but
+          # not restarted.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          # Liveness: "restart me". Only checks the process answers HTTP, so a
+          # DynamoDB outage does not become a restart loop.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            # Requests are what the scheduler reserves. The memory limit is a
+            # ceiling against leaks. No CPU limit: CPU is compressible, and a
+            # limit only adds throttling latency when the node has spare CPU.
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

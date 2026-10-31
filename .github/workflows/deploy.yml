@@ -1,0 +1,116 @@
+# Reusable: deploy one image tag to the running cluster. Called by
+# cluster-up (right after the cluster is created) and by build (on each push
+# to main while a cluster exists).
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Tag in ghcr.io/<repo> to deploy, e.g. sha-<commit>.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  TAG: ${{ inputs.image_tag }}
+  CLUSTER: privatepaste
+  AWS_REGION: us-east-1
+  KUSTOMIZE_VERSION: v5.8.3
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Two deploys never interleave; a newer one waits for the current one.
+    concurrency:
+      group: eks-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::612529366989:role/privatepaste-gha-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to GHCR (to check the image exists)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # cluster-up can be started seconds after a push, before build has
+      # pushed that commit's image. Wait for it rather than fail.
+      - name: Wait for image
+        run: |
+          for i in $(seq 1 40); do
+            if docker manifest inspect "$IMAGE:$TAG" > /dev/null 2>&1; then
+              echo "found $IMAGE:$TAG"; exit 0
+            fi
+            echo "waiting for $IMAGE:$TAG ($i/40)"; sleep 15
+          done
+          echo "::error::image $IMAGE:$TAG never appeared; did the build workflow fail?"
+          exit 1
+
+      - name: Install kustomize
+        run: |
+          if ! command -v kustomize > /dev/null; then
+            curl -sSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin kustomize
+          fi
+          kustomize version
+
+      # Writes ~/.kube/config using the role's IAM identity. The role created
+      # the cluster, so EKS made it cluster admin.
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+
+      # The tunnel token goes straight from SSM into a Kubernetes Secret. It
+      # is masked in logs and never written to the repo or GitHub secrets.
+      - name: Tunnel token secret
+        run: |
+          token=$(aws ssm get-parameter --name /privatepaste/cloudflared/token --with-decryption --query Parameter.Value --output text)
+          echo "::add-mask::$token"
+          kubectl create namespace privatepaste --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n privatepaste create secret generic cloudflared-token \
+            --from-literal=token="$token" --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply manifests
+        working-directory: deploy/k8s/overlays/eks
+        run: |
+          kustomize edit set image "privatepaste=$IMAGE:$TAG"
+          kustomize build . | kubectl apply -f -
+
+      # rollout status blocks until the new pods pass readiness (which checks
+      # DynamoDB through Pod Identity), or fails the job after the timeout.
+      - name: Wait for rollout
+        run: |
+          kubectl -n privatepaste rollout status deployment/privatepaste --timeout=5m
+          kubectl -n privatepaste rollout status deployment/cloudflared --timeout=5m
+
+      # The real end-to-end check: public DNS -> Cloudflare edge -> tunnel ->
+      # cloudflared -> Service -> pod -> DynamoDB.
+      - name: Smoke test through Cloudflare
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://privatepasteapp.com/readyz || true)
+            if [ "$code" = 200 ]; then echo "privatepasteapp.com/readyz -> 200"; exit 0; fi
+            echo "got $code, retrying ($i/30)"; sleep 10
+          done
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo "- image: \`$IMAGE:$TAG\`"
+            echo '```'
+            kubectl -n privatepaste get pods -o wide 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

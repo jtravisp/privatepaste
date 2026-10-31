@@ -1,0 +1,68 @@
+# The cluster's only path in from the internet.
+#
+# cloudflared opens outbound connections to Cloudflare's edge and keeps them
+# open. Cloudflare sends requests for privatepasteapp.com down those
+# connections; cloudflared forwards each to the app's ClusterIP Service,
+# using the routing defined in Terraform (infra/persistent/cloudflare.tf).
+#
+# The token secret is created by the deploy workflow from SSM, not stored in
+# this repo:
+#   kubectl -n privatepaste create secret generic cloudflared-token --from-literal=token=...
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  labels:
+    app.kubernetes.io/name: cloudflared
+spec:
+  # Two connectors: Cloudflare balances across them, so a restart or a lost
+  # Spot node does not take the site down.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflared
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflared
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.7
+          args:
+            - tunnel
+            - --no-autoupdate # the image tag is the version; never self-update
+            - --metrics
+            - 0.0.0.0:2000
+            - run
+          env:
+            # cloudflared reads the connector token from this variable.
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-token
+                  key: token
+          ports:
+            - name: metrics
+              containerPort: 2000
+          # /ready returns 200 once at least one connection to Cloudflare is up.
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

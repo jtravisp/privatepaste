@@ -1,25 +1,36 @@
+IMAGE ?= privatepaste:dev
+CLUSTER ?= privatepaste
+
+.PHONY: help test vet run image kind-up kind-load kind-deploy kind-down
+
 help:
-	@echo "Available targets:"
-	@echo "build - build the Go binary"
-	@echo "run - run the Go binary with environment variables from .env"
-	@echo "docker-build - build the Docker image"
-	@echo "docker-run - run the Docker container with environment variables from .env"
-	@echo "clean - remove the built binary and Docker image"
+	@echo "test        - go vet + unit tests (race detector needs cgo)"
+	@echo "run         - run locally against DYNAMODB_ENDPOINT or AWS (reads .env)"
+	@echo "image       - build the container image ($(IMAGE))"
+	@echo "kind-up     - create a local kind cluster with Kyverno and the policies"
+	@echo "kind-deploy - build, load and deploy the app + DynamoDB Local into kind"
+	@echo "kind-down   - delete the local kind cluster"
 
-.PHONY: help build run docker-build docker-run clean
+vet:
+	go vet ./...
 
-build:
-	go build -o server ./cmd/server
+test: vet
+	go test -count=1 ./...
 
 run:
-	set -a && . ./.env && set +a && ./server
+	go run ./cmd/server
 
-docker-build:
-	docker build -t server .
+image:
+	docker build -t $(IMAGE) .
 
-docker-run:
-	docker run -p 8080:8080 --env-file .env server
+kind-up:
+	../scripts/kind-up.sh $(CLUSTER)
 
-clean:
-	rm -f server
-	docker rmi server || true
+kind-deploy: image
+	kind load docker-image $(IMAGE) --name $(CLUSTER)
+	kubectl --context kind-$(CLUSTER) apply -k ../deploy/k8s/overlays/kind
+	kubectl --context kind-$(CLUSTER) -n privatepaste rollout restart deployment/privatepaste
+	kubectl --context kind-$(CLUSTER) -n privatepaste rollout status deployment/privatepaste --timeout=120s
+
+kind-down:
+	kind delete cluster --name $(CLUSTER)

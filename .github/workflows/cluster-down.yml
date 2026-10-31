@@ -1,0 +1,70 @@
+# End a session: destroy the cluster and its VPC. Run by hand, or called by
+# the reaper when the cluster's expires-at tag has passed. Idempotent: with no
+# cluster it destroys whatever is left in the eks state (often nothing).
+name: cluster-down
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: eks-terraform
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infra/eks
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::612529366989:role/privatepaste-gha-deploy
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.3
+          terraform_wrapper: false
+
+      - name: Cluster status
+        id: cluster
+        run: |
+          status=$(aws eks describe-cluster --name privatepaste --query cluster.status --output text 2>/dev/null || echo NONE)
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "cluster status: $status"
+
+      # Anything Kubernetes itself provisions in AWS -- a LoadBalancer
+      # Service's ELB, a PersistentVolumeClaim's EBS volume -- is invisible
+      # to Terraform. Delete those while their controllers still run, or they
+      # outlive the cluster and keep billing. This project creates none
+      # (the tunnel replaces a load balancer); this step makes sure.
+      # Best-effort: a half-built cluster must not block the destroy.
+      - name: Remove Kubernetes-provisioned AWS resources
+        if: steps.cluster.outputs.status == 'ACTIVE'
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig --name privatepaste --region us-east-1
+          kubectl get svc -A -o json \
+            | jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' \
+            | while read -r ns name; do kubectl -n "$ns" delete svc "$name" --wait --timeout=5m; done
+          kubectl delete pvc -A --all --wait --timeout=5m
+          kubectl delete namespace privatepaste --ignore-not-found --wait --timeout=5m
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      # expires_at is required by the configuration but meaningless here.
+      - name: Terraform destroy
+        run: terraform destroy -input=false -auto-approve -lock-timeout=20m -var "expires_at=1970-01-01T00:00:00Z"
+
+      - name: Summary
+        run: echo "### Cluster destroyed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"

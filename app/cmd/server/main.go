@@ -1,72 +1,113 @@
+// Command server runs the PrivatePaste HTTP server.
+//
+// Lifecycle, in the order Kubernetes drives it:
+//  1. Start: load config, build the AWS client (credentials from EKS Pod
+//     Identity in the cluster, a shared profile locally), start listening.
+//  2. Serve: /readyz reports ready once the table is reachable.
+//  3. SIGTERM: mark not-ready, keep serving for ShutdownDelay so the pod is
+//     removed from Service endpoints, then drain in-flight requests and exit.
 package main
 
 import (
 	"context"
+	"errors"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/joho/godotenv"
 	app "github.com/jtravisp/privatepaste"
-	appconfig "github.com/jtravisp/privatepaste/internal/config"
-	"github.com/jtravisp/privatepaste/internal/handler"
+	"github.com/jtravisp/privatepaste/internal/config"
+	"github.com/jtravisp/privatepaste/internal/httpserver"
 	"github.com/jtravisp/privatepaste/internal/store"
 )
 
-func healthCheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := run(); err != nil {
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
+	}
 }
 
-func main() {
-	godotenv.Load()
-	cfg := appconfig.Load()
-	log.Printf("config: table=%s region=%s profile=%s", cfg.TableName, cfg.Region, cfg.AWSProfile)
+func run() error {
+	// .env is for `go run` on a laptop; absent in the container, and that is
+	// not an error.
+	_ = godotenv.Load()
+	cfg := config.Load()
+	slog.Info("starting", "env", cfg.Env, "table", cfg.TableName, "region", cfg.Region,
+		"local_dynamo", cfg.DynamoEndpoint != "")
 
-	awsCfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(cfg.Region),
-		config.WithSharedConfigProfile(cfg.AWSProfile),
-	)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
 
-	if err != nil {
-		log.Fatalf("failed to load AWS config: %v", err)
+	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region)}
+	if cfg.AWSProfile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(cfg.AWSProfile))
 	}
-
-	mux := http.NewServeMux()
-	dynamoClient := dynamodb.NewFromConfig(awsCfg)
-	store := store.NewDynamo(dynamoClient, cfg.TableName)
-	pasteHandler := handler.NewPasteHandler(store)
-	mux.HandleFunc("POST /pastes", pasteHandler.CreatePaste)
-	mux.HandleFunc("DELETE /pastes/{id}", pasteHandler.DeletePaste)
-	mux.HandleFunc("GET /pastes/{id}", pasteHandler.GetPaste)
-
-	staticFS, err := fs.Sub(app.FrontendFS, "frontend")
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		log.Fatalf("failed to create static FS: %v", err)
+		return err
 	}
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		data, err := app.FrontendFS.ReadFile("frontend/index.html")
-		if err != nil {
-			http.Error(w, "Failed to read index.html", http.StatusInternalServerError)
-			return
+	client := dynamodb.NewFromConfig(awsCfg, func(o *dynamodb.Options) {
+		if cfg.DynamoEndpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.DynamoEndpoint)
 		}
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(data)
 	})
+	st := store.NewDynamo(client, cfg.TableName)
 
-	mux.HandleFunc("GET /health", healthCheck)
-
-	log.Println("starting server on :" + cfg.Port)
-	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	if cfg.DynamoEndpoint != "" {
+		if err := st.EnsureTable(ctx, 60*time.Second); err != nil {
+			return err
+		}
 	}
-	log.Fatal(srv.ListenAndServe())
+
+	frontend, err := fs.Sub(app.FrontendFS, "frontend")
+	if err != nil {
+		return err
+	}
+	srv := httpserver.New(st, frontend)
+
+	httpSrv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("listening", "addr", httpSrv.Addr)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	slog.Info("shutdown signal received", "delay", cfg.ShutdownDelay.String())
+	srv.SetNotReady()
+	time.Sleep(cfg.ShutdownDelay)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	slog.Info("shutdown complete")
+	return nil
 }

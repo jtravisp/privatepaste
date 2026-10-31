@@ -1,0 +1,7 @@
+# Optional piece: the Cloudflare Tunnel connector. Included by the eks
+# overlay; kind can include it too, to expose a local cluster publicly.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - cloudflared.yaml

@@ -40,9 +40,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         showView('create')
     } else {
         const id = path.slice(1)
+        // URLSearchParams already percent-decodes. get() returns null when the
+        // key is absent; that must reach the "missing key" branch, not be
+        // turned into the string "null".
         const params = new URLSearchParams(window.location.hash.slice(1))
-        const keyRaw = decodeURIComponent(params.get('key'))
-        
+        const keyRaw = params.get('key')
+
         if (keyRaw) {
             await loadPaste(id, keyRaw)
         } else {

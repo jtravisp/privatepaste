@@ -1,0 +1,49 @@
+# Local: the image you just built (loaded into kind, never pulled), and
+# DynamoDB Local in place of the real table. No AWS account involved.
+#
+#   make -C app kind-up kind-deploy
+#   kubectl -n privatepaste port-forward svc/privatepaste 8080:80
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Applies to resources added here too (dynamodb-local), not just the base.
+namespace: privatepaste
+
+resources:
+  - ../../base
+  - dynamodb-local.yaml
+
+images:
+  - name: privatepaste
+    newName: privatepaste
+    newTag: dev
+
+patches:
+  - target:
+      kind: Deployment
+      name: privatepaste
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      # The image only exists inside kind (kind load); never try a registry.
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: TABLE_NAME, value: privatepaste-local}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: ENV, value: kind}
+      # Setting an endpoint also makes the app create the table on start.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: DYNAMODB_ENDPOINT, value: "http://dynamodb-local:8000"}
+      # DynamoDB Local accepts any credentials but the SDK requires some.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: AWS_ACCESS_KEY_ID, value: local}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: AWS_SECRET_ACCESS_KEY, value: local}

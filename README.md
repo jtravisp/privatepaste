@@ -1,85 +1,77 @@
 # PrivatePaste
 
-A zero-knowledge encrypted text vault. The server stores only ciphertext. It has no access to paste content.
+A zero-knowledge encrypted text vault. The browser encrypts every paste with AES-256-GCM before it leaves the page; the key lives in the URL fragment (`#key=...`), which browsers never send to a server. The server stores ciphertext it cannot read.
 
-## How it works
+It runs on an **on-demand Amazon EKS cluster that destroys itself**. A GitHub Actions workflow creates the cluster and deploys in about 15 minutes; a reaper workflow tears it down when its time is up (2.5 hours by default). Between sessions the only things left in AWS are a DynamoDB table and some IAM roles, which cost close to nothing.
 
-Encryption happens in the browser using the Web Crypto API (AES-256-GCM). The encryption key is generated client-side, appended to the share URL as a fragment (`#key=...`), and never transmitted to the server. The server receives and stores only the encrypted payload and IV. Decryption happens client-side on retrieval.
+```
+browser ──HTTPS──▶ Cloudflare edge ──Tunnel──▶ cloudflared pods ──▶ Service ──▶ app pods ──▶ DynamoDB
+                   privatepasteapp.com          (outbound-only)     ClusterIP     Go          (Pod Identity)
+                                       └──────────────── ephemeral EKS cluster ─────────────┘   persistent
+```
 
-Pastes support configurable expiry (burn after read, 1h, 24h, 7d, or no expiry).
+| | |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | How every piece works and why it is built that way |
+| [docs/runbook.md](docs/runbook.md) | One-time setup, starting and stopping sessions, local development, troubleshooting |
 
-## Architecture
+## Quick reference
 
-**Go + standard library** `net/http` with Go 1.22+ method-based routing covers everything.
+**Start a session** (about 15 min, about $0.35 for 2.5 hours):
+GitHub → Actions → **cluster-up** → Run workflow. Running it again extends the session.
 
-**DynamoDB** The access pattern is key-value by paste ID. DynamoDB's TTL attribute handles paste expiration.
+**End it early:** Actions → **cluster-down**. Otherwise the **cluster-reaper** destroys it within 15 minutes of expiry.
 
-**JS embedded in the Go binary** Frontend files are embedded via `go:embed` and served directly by the Go server. 
+**kubectl access while it is up:**
 
-**ECS Fargate + ALB** The ALB is included even for low traffic, HTTPS terminated at the ALB.
+```bash
+aws eks update-kubeconfig --name privatepaste --region us-east-1 --profile privatepaste
+kubectl -n privatepaste get pods
+```
 
-**Terraform** Complete infra packaged in the repo. State is stored in S3.
+**Run locally, no AWS:**
 
-## Design decisions
+```bash
+make -C app kind-up kind-deploy
+kubectl --context kind-privatepaste -n privatepaste port-forward svc/privatepaste 8080:80
+# http://localhost:8080
+```
 
-**The store is a dumb data layer.** `store.Store` methods only read or write to DynamoDB. 
+## Repository layout
 
-**Owner tokens are generated server-side.** At paste creation, the server generates a cryptographically random owner token, returns it once in the creation response, and stores only its SHA-256 hash alongside the paste. The raw token is never persisted. On delete, the handler fetches the paste, hashes the provided token, compares it to the stored hash, and only proceeds if they match.
+```
+app/                         Go server + embedded frontend
+  cmd/server/main.go           config, AWS client, graceful shutdown
+  internal/handler/            paste API: create, read (with burn), delete
+  internal/httpserver/         routes, security headers, health probes
+  internal/store/              DynamoDB access (+ in-memory store for tests)
+  frontend/                    index.html, app.js (Web Crypto), style.css
+  Dockerfile
+deploy/k8s/                  Kustomize manifests
+  base/                        Deployment, Service, ServiceAccount, PDB
+  components/tunnel/           cloudflared connector
+  overlays/eks/                GHCR image, real table, tunnel
+  overlays/kind/               local image, DynamoDB Local
+infra/
+  persistent/                  long-lived: DynamoDB, IAM, GitHub OIDC, Cloudflare tunnel, budget
+  eks/                         ephemeral: VPC, EKS cluster, Spot nodes, add-ons, access
+.github/workflows/
+  build.yml                    test + image on every PR/push; push + deploy on main
+  deploy.yml                   reusable: roll an image out to the cluster
+  cluster-up.yml               create cluster, deploy
+  cluster-down.yml             destroy cluster
+  cluster-reaper.yml           every 15 min: destroy if expired
+scripts/kind-up.sh           local cluster
+```
 
-**`DeletePaste` takes only an ID.** It does not know about tokens. Token verification is the handler's responsibility.
+## API
 
-**`burn_after_read` is handled by the handler.** `GetPaste` retrieves and returns a paste unconditionally. If the paste has `BurnAfterRead: true`, the handler calls `DeletePaste` after a successful retrieval. This keeps the store's behavior predictable and makes the burn logic easy to reason about in isolation.
-
-**Request body size is capped.** CreatePaste wraps r.Body with http.MaxBytesReader before decoding, limiting payloads to 512KB. Oversized requests are rejected at the HTTP layer before touching DynamoDB.
-
-## Deployment
-
-Built and pushed to ECR manually or via GitHub Actions. The ECS service runs task definition on Fargate (see Terraform ECS module).
-
-To deploy a new image manually:
-
-1. Build and push to ECR with a new tag (tags are immutable, `latest` cannot be overwritten)
-2. Register a new task definition revision pointing at the new image tag
-3. Update the service: `aws ecs update-service --cluster <project_name>-cluster --service <project_name>-service --task-definition <project_name>-task:<revision> --force-new-deployment`
-
-## Data model
-
-DynamoDB table: `pastes`
-
-| Attribute | Type | Notes |
+| Method | Path | |
 |---|---|---|
-| `id` | String (PK) | nanoid- short, URL-safe |
-| `ciphertext` | String | AES-256-GCM encrypted content, base64 |
-| `iv` | String | AES-GCM nonce, base64 |
-| `owner_token_hash` | String | SHA-256 of owner token |
-| `burn_after_read` | Boolean | Delete on first retrieval |
-| `ttl` | Number | Unix timestamp |
-| `created_at` | Number | Unix timestamp |
+| `POST` | `/pastes` | `{ciphertext, iv, expiry, burn_after_read}` → `201 {id, owner_token}` |
+| `GET` | `/pastes/{id}` | `200 {ciphertext, iv, burn_after_read}`; a burn paste is deleted by this read |
+| `DELETE` | `/pastes/{id}` | `Authorization: Bearer <owner_token>` → `204` |
+| `GET` | `/healthz` | liveness: the process answers |
+| `GET` | `/readyz` | readiness: DynamoDB reachable and not shutting down |
 
-## Structure
-
-```
-privatepaste/
-├── app/
-│   ├── assets.go
-│   ├── cmd/server/main.go
-│   ├── internal/
-│   │   ├── config/config.go
-│   │   ├── model/paste.go
-│   │   ├── store/store.go
-│   │   ├── store/dynamo.go
-│   │   └── handler/paste.go
-│   ├── frontend/
-│   │   ├── index.html
-│   │   ├── app.js
-│   │   └── style.css
-│   ├── Dockerfile
-│   ├── Makefile
-│   └── go.mod
-├── infra/
-    ├── modules/
-│   ├── main.tf
-│   ├── variables.tf
-│   └── outputs.tf
-└── .github/workflows/app.yml
-```
+`expiry` is one of `burn`, `1h`, `24h`, `7d`, `never`.
