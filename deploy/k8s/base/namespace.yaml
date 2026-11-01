@@ -2,3 +2,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: privatepaste
+  labels:
+    # Pod Security Admission, built into Kubernetes. "warn" never blocks: it
+    # prints which fields a pod is missing for the "restricted" profile on
+    # every `kubectl apply`. Enforcement is Kyverno's job (step 6).
+    pod-security.kubernetes.io/warn: restricted
