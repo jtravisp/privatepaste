@@ -21,6 +21,27 @@ spec:
       labels:
         app.kubernetes.io/name: privatepaste
     spec:
+      # Pod level: identity and syscall filtering apply to every container in
+      # the pod, including any sidecar or `kubectl debug` container added later.
+      securityContext:
+        # The kubelet refuses to start a container that would run as UID 0.
+        # It can only check a numeric user, which is why the Dockerfile says
+        # `USER 65532:65532` and not `USER nonroot`.
+        runAsNonRoot: true
+        # Stated here as well as in the image, so a base-image change can't
+        # silently change who the app runs as. Without runAsGroup the primary
+        # group can fall back to 0 (root).
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The container runtime's default seccomp filter: blocks rarely used,
+        # dangerous syscalls. Many clusters otherwise default to Unconfined.
+        seccompProfile: {type: RuntimeDefault}
+      # The app never calls the Kubernetes API, so don't mount an API token an
+      # attacker could use. AWS access is unaffected: EKS Pod Identity injects
+      # its own projected token (eks-pod-identity-token), not this one.
+      automountServiceAccountToken: false
+      # Still needed: the Pod Identity association binds the AWS role to this
+      # ServiceAccount name (infra/eks).
       serviceAccountName: privatepaste
       # Must exceed the app's SHUTDOWN_DELAY plus its drain timeout, or the
       # kubelet SIGKILLs it mid-drain.
@@ -36,6 +57,18 @@ spec:
               app.kubernetes.io/name: privatepaste
       containers:
         - name: app
+          # Container level: these fields don't exist at pod level.
+          securityContext:
+            # Sets no_new_privs: no setuid binary or file capability can give
+            # the process more privilege than it started with.
+            allowPrivilegeEscalation: false
+            # Drop every Linux capability (NET_RAW, CHOWN, ...). Binding 8080
+            # needs none; only ports below 1024 need NET_BIND_SERVICE.
+            capabilities: {drop: ["ALL"]}
+            # The app only reads its own filesystem, so an attacker can't drop
+            # tools or modify files. If it ever needs scratch space, mount an
+            # emptyDir at /tmp rather than relaxing this.
+            readOnlyRootFilesystem: true
           # Placeholder; each overlay sets the real image with `images:`.
           image: privatepaste
           ports:

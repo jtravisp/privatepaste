@@ -7,7 +7,7 @@ help:
 	@echo "test        - go vet + unit tests (race detector needs cgo)"
 	@echo "run         - run locally against DYNAMODB_ENDPOINT or AWS (reads .env)"
 	@echo "image       - build the container image ($(IMAGE))"
-	@echo "kind-up     - create a local kind cluster with Kyverno and the policies"
+	@echo "kind-up     - create a local kind cluster"
 	@echo "kind-deploy - build, load and deploy the app + DynamoDB Local into kind"
 	@echo "kind-down   - delete the local kind cluster"
 

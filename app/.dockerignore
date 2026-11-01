@@ -1,0 +1,20 @@
+# Allowlist: exclude everything, then add back only what `go build` reads.
+# New files are excluded by default, so a stray secret can't sneak into the
+# build context.
+*
+
+# Module definition and checksums (needed by `go mod download`)
+!go.mod
+!go.sum
+
+# Source code
+!cmd/
+!internal/
+!assets.go
+
+# Embedded into the binary by //go:embed in assets.go
+!frontend/
+
+# Tests don't go into the binary; leaving them out means editing a test
+# doesn't invalidate the build cache. (Later rules override earlier ones.)
+**/*_test.go
