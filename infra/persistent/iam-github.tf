@@ -163,6 +163,14 @@ data "aws_iam_policy_document" "github_deploy" {
     actions   = ["iam:ListAttachedRolePolicies"]
     resources = [aws_iam_role.eks_cluster.arn, aws_iam_role.eks_node.arn]
   }
+  # CreateNodegroup also checks, with our credentials, that the node group
+  # service-linked role exists. It already does (AWS created it once), so
+  # read access is enough; the pipeline still can't create or change it.
+  statement {
+    sid       = "CheckNodegroupServiceRole"
+    actions   = ["iam:GetRole"]
+    resources = ["arn:aws:iam::${local.account_id}:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"]
+  }
   # Lets the EKS stack look up the human SSO admin role to grant it kubectl
   # access, without hardcoding its generated name.
   statement {
