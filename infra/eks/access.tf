@@ -3,27 +3,19 @@
 # The human admin: the account's IAM Identity Center (SSO) AdministratorAccess
 # role. Its name has a generated suffix, so look it up instead of hardcoding.
 #
-# Gotcha: SSO role ARNs carry a path (/aws-reserved/sso.amazonaws.com/), but
-# EKS access entries must use the ARN WITHOUT the path, or kubectl gets
-# "Unauthorized". So build the ARN from the account ID and the role NAME
-# (which never includes the path) instead of editing the full ARN.
-#
-# Don't use replace(arn, "/aws-reserved/sso.amazonaws.com/", "/"): Terraform
-# treats a substring wrapped in slashes as a regular expression, so that call
-# replaced only "aws-reserved/sso.amazonaws.com" and produced "role///...",
-# which EKS rejects as an invalid principal.
-data "aws_caller_identity" "current" {}
-
+# SSO role ARNs carry a path (role/aws-reserved/sso.amazonaws.com/...). Use
+# the ARN exactly as IAM reports it, path included. Access entries accept a
+# path; it is the older aws-auth ConfigMap that can't take one. Stripping the
+# path makes an ARN that names no role, and EKS rejects it with "The
+# specified principalArn is invalid: invalid principal" (first cluster-up,
+# 2026-11-02). EKS removes the path itself in the Kubernetes username.
 data "aws_iam_roles" "sso_admin" {
   name_regex  = "^AWSReservedSSO_AdministratorAccess_.*"
   path_prefix = "/aws-reserved/sso.amazonaws.com/"
 }
 
 locals {
-  admin_principal_arns = [
-    for name in data.aws_iam_roles.sso_admin.names :
-    "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${name}"
-  ]
+  admin_principal_arns = data.aws_iam_roles.sso_admin.arns
 }
 
 resource "aws_eks_access_entry" "admin" {
