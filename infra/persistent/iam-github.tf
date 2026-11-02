@@ -155,13 +155,13 @@ data "aws_iam_policy_document" "github_deploy" {
     actions   = ["iam:PassRole", "iam:GetRole"]
     resources = [aws_iam_role.eks_cluster.arn, aws_iam_role.eks_node.arn, aws_iam_role.app.arn]
   }
-  # CreateNodegroup checks that the node role has the policies a node needs,
-  # and EKS makes that IAM call with OUR credentials (forward access), not its
-  # own. Read-only, and on the node role only.
+  # CreateNodegroup checks the attached policies of both the node role and
+  # the cluster role, and EKS makes those IAM calls with OUR credentials
+  # (forward access), not its own. Read-only, and on those two roles only.
   statement {
-    sid       = "ValidateNodeRole"
+    sid       = "ValidateEksRoles"
     actions   = ["iam:ListAttachedRolePolicies"]
-    resources = [aws_iam_role.eks_node.arn]
+    resources = [aws_iam_role.eks_cluster.arn, aws_iam_role.eks_node.arn]
   }
   # Lets the EKS stack look up the human SSO admin role to grant it kubectl
   # access, without hardcoding its generated name.

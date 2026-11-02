@@ -267,7 +267,7 @@ Destroy runs in reverse.
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `build.yml` | every PR, every push to `main` | Security gates in parallel (Gitleaks, Checkov, `go vet` + `go test -race` + govulncheck), then build the image and scan it with Trivy. On `main`, if every gate passed: push that same image as `sha-<commit>` and `main` to GHCR; if the cluster is ACTIVE, call `deploy.yml` (§15.3) |
+| `build.yml` | every PR, every push to `main` | Security gates in parallel (Gitleaks, Checkov, `go vet` + `go test -race` + govulncheck), then build the image and scan it with Trivy. On `main`, if every gate passed: push that same image as `sha-<commit>` and `main` to GHCR, sign its digest with cosign and verify the signature; if the cluster is ACTIVE, call `deploy.yml` (§15.3, §15.4) |
 | `deploy.yml` | called by `build` and `cluster-up` | Wait for the image, set the tunnel Secret from SSM, `kustomize edit set image`, apply, wait for rollout, smoke-test `https://privatepasteapp.com/readyz` |
 | `cluster-up.yml` | manual, input `ttl_minutes` (default 150) | Compute `expires_at`, `terraform apply` the eks stack, call `deploy.yml` |
 | `cluster-down.yml` | manual, or called by the reaper | Delete any Kubernetes-provisioned AWS resources, then `terraform destroy` |
@@ -280,7 +280,7 @@ Destroy runs in reverse.
 - **Gates before shipping:** nothing is pushed unless Gitleaks, Checkov, the tests, govulncheck and the Trivy gate all passed, and branch protection makes the same checks required for merging (§15.3).
 - **Extending a session:** re-running `cluster-up` re-applies with a later `expires_at`, which only changes tags, and redeploys.
 - **Input handling:** `ttl_minutes` reaches the shell through an environment variable, never interpolated into the script text, and is validated as an integer from 30 to 480.
-- **Least-privilege tokens:** the workflow default is `contents: read`. Only jobs that need it get `packages: write` (push) or `id-token: write` (AWS).
+- **Least-privilege tokens:** the workflow default is `contents: read`. Only jobs that need it get `packages: write` (push) or `id-token: write` (AWS, and keyless signing in `image`).
 - **The smoke test** exercises the full path: DNS, the Cloudflare edge, the tunnel, `cloudflared`, the Service, the pod, Pod Identity and DynamoDB. A green deploy means the public site works, not just that pods started.
 
 ## 11. The life of a session
@@ -404,7 +404,7 @@ The first version of this stack shipped deliberately unhardened (an Alpine image
 | `NoNewPrivs` | `1` | Privilege escalation is blocked |
 | `Seccomp` | `2` | A seccomp filter is active (0 = off, 1 = strict, 2 = filter) |
 
-**Defense in depth:** because the pod sets `runAsUser: 65532`, even the old root-default Alpine image would start as UID 65532 rather than being rejected. The pod spec protects you from a bad image. That's also why admission policy (§15.4) checks the pod spec, not just the image.
+**Defense in depth:** because the pod sets `runAsUser: 65532`, even the old root-default Alpine image would start as UID 65532 rather than being rejected. The pod spec protects you from a bad image. That's also why admission policy (§15.5) checks the pod spec, not just the image.
 
 **Pod Security Admission:** the namespace has `pod-security.kubernetes.io/warn: restricted`. It never blocks; it prints violations on every `kubectl apply`. The app passes `restricted`. `dynamodb-local` (a third-party image, kind only) does not yet.
 
@@ -429,8 +429,9 @@ The first version of this stack shipped deliberately unhardened (an Alpine image
 
 ```
 gitleaks --+
-iac      --+--> image --> cluster-check --> deploy
-test     --+    build, Trivy, push    main only, if a cluster is up
+iac      --+--> image ---------------------> cluster-check --> deploy
+test     --+    build, Trivy, push, sign      main only, if a cluster is up
+                (push and sign: main only, §15.4)
 ```
 
 - **Gates in parallel, then `image`.** `image` needs all three, so nothing is built for shipping unless every gate passed.
@@ -458,11 +459,47 @@ A version number names a release; only a hash proves the bytes. The hashes are n
 - **Overlap with Trivy.** Trivy can also scan for secrets and IaC problems. Those are left to Gitleaks and Checkov, so each finding has one owner.
 - **gosec (Go static analysis)** isn't adopted yet. It flags *patterns*, not known CVEs, and needs tuning to keep noise down. It's a candidate once the gates above are routine.
 
-### 15.4 Still planned
+### 15.4 Image signing
+
+Every image pushed from `main` is signed with **cosign keyless signing** (Sigstore), by digest, in the same `image` job that scanned and pushed it.
+
+**What happens in the job** (`id-token: write` lets the job request a GitHub OIDC token):
+
+1. After `docker push`, the job reads the registry digest of what it pushed and checks it has the form `ghcr.io/jtravisp/privatepaste@sha256:...`. Both tags point to this one digest, so one signature covers both.
+2. cosign generates a throwaway key pair in memory.
+3. It sends the OIDC token and the public key to **Fulcio**, Sigstore's certificate authority. Fulcio checks GitHub's signature on the token and issues a certificate, valid for about 10 minutes, that binds the key to this workflow's identity.
+4. cosign signs the digest, discards the private key, records the signature and certificate in **Rekor**, Sigstore's public append-only transparency log, and stores the signature in GHCR next to the image.
+5. The job then verifies the signature the way any consumer will.
+
+**There is no signing key to protect.** The workflow's identity, vouched for by GitHub and certified by Fulcio, takes its place. Rekor's timestamped entry proves the signature was made while the short-lived certificate was valid, so it stays verifiable afterwards, and every signature made as this identity is publicly listed. Entries name the repo, workflow and commit; the repo is public, so this exposes nothing new.
+
+**The verification policy** names the full identity, written out rather than derived from the run being verified:
+
+```
+cosign verify ghcr.io/jtravisp/privatepaste@sha256:<digest> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/jtravisp/privatepaste/.github/workflows/build.yml@refs/heads/main
+```
+
+Pinning the workflow file **and the ref** matters: a workflow on another branch of the same repo also gets a certificate naming the repo, but with its own ref, so it can't produce a signature that passes.
+
+**Why the digest, never a tag:** a tag is a pointer that can be moved, even by another run in the seconds between the push and the signing step. A digest names exact bytes.
+
+**What a signature proves, and what it doesn't:** it proves this digest was produced by `build.yml` on `main`, which means after every gate in §15.3 passed. A stolen GHCR token can push an image but can't sign it as this workflow, and a repointed tag leads to bytes with no valid signature. It does **not** prove the code is safe: anything that reaches `main` gets signed. That makes the branch ruleset (§15.3) part of the signing control.
+
+**Failure behaviour:** if signing fails, the image is already pushed but unsigned. The job fails, so `deploy` doesn't run, and anything that verifies signatures rejects that image.
+
+**Evidence:** the first signed image is `sha256:e297d758be0e1087164b3c3c21b866b2f768ff3726180e8f0a68d0d4dc051920` (merge of PR #4); the job's verify step passed. Images pushed before signing, such as `sha256:fad6b3ee...6f3b55`, have no signature and fail verification.
+
+**Not yet done:** deploying by digest, with verification as a deploy gate (§15.5). Today `deploy.yml` still deploys by tag and doesn't check the signature. cosign 3.1.4 is installed in CI with the same pinned-hash pattern as the scanners.
+
+### 15.5 Still planned
 
 | Area | Current state | Planned |
 |---|---|---|
-| Signing | Images unsigned | cosign keyless signing on `main`, using the workflow's GitHub OIDC identity, by digest |
-| Admission control | PSA `warn` only | Kyverno in kind: Audit first, then Enforce; reject pods that can run as root. Stretch: `verifyImages` rejects unsigned images |
+| Deploy by digest | `deploy.yml` deploys `sha-<commit>` by tag, unverified | `deploy.yml` resolves the tag to a digest, waits for and verifies its signature against the identity in §15.4, then deploys `@sha256:...`. Covers both callers (`build` and `cluster-up`). The `CKV_K8S_43` skip stays, because CI scans the overlay with its placeholder tag; only its reason changes |
+| Admission control | PSA `warn` only | Kyverno in kind: Audit first, then Enforce; reject pods that can run as root. Stretch: `verifyImages` checks the §15.4 signature for every pod, whoever applies it |
+| First real deploy of the hardened stack | `cluster-up` never run since the changes | One session as a deliberate integration test: the narrowed deploy-role IAM (an AccessDenied means a missing action), cloudflared's file-mounted token with `fsGroup`/`0440`, the VPC default security group, and deploy by digest |
+| Continuous scanning | Gates run on PRs and `main` only | Scheduled weekly Trivy scan of the current `main` image; SARIF upload to the Security tab for report-only findings |
 | Supply chain | Actions pinned to major tags | Pin actions by commit SHA; Dependabot for actions, Go modules and base-image digests |
 | Network | No NetworkPolicy | Allow app ingress only from `cloudflared` (VPC CNI network policy) |
