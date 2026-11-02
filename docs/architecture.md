@@ -16,7 +16,7 @@ This document explains how PrivatePaste works from the browser down to the AWS a
 - [12. Cost](#12-cost)
 - [13. Failure modes](#13-failure-modes)
 - [14. Trade-offs and decisions](#14-trade-offs-and-decisions)
-- [15. Deferred to the DevSecOps pass](#15-deferred-to-the-devsecops-pass)
+- [15. Security controls](#15-security-controls)
 
 ---
 
@@ -99,10 +99,10 @@ The data outlives the cluster, so destroying the cluster loses nothing.
 
 `app/Dockerfile` is a two-stage build:
 
-1. **Build stage** (`golang:1.26.3-alpine`): download modules, compile the binary.
-2. **Runtime stage** (`alpine:3.21`): copy the binary in and run it.
+1. **Build stage** (`golang:1.26.10-alpine`, pinned by digest): download and verify modules against `go.sum`, then compile a static binary (`CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w"`).
+2. **Runtime stage** (`gcr.io/distroless/static:nonroot`, pinned by digest): copy in only the binary and run it as UID 65532.
 
-Two stages keep the Go toolchain (hundreds of MB) out of what ships. The image is intentionally *not* hardened yet: it runs as root, uses tags rather than digests, and has a shell. Fixing that is the first exercise of the DevSecOps pass (§15).
+Only the last stage ships. The Go toolchain, Alpine and the source code stay in the build stage. The base OS of the two stages doesn't matter because the binary is static: it links nothing from the OS and talks straight to the host's kernel. The hardening choices and measured before/after are in §15.1.
 
 Images go to **GHCR** (`ghcr.io/jtravisp/privatepaste`), tagged `sha-<commit>` (immutable by convention: one tag per commit) and `main` (floating, for people). Deploys always use the SHA tag, so the cluster runs exactly the commit that was tested, and rolling back means deploying an older SHA.
 
@@ -125,6 +125,7 @@ Manifests are [Kustomize](https://kustomize.io): a `base` that's the same everyw
 - **`maxSurge: 1, maxUnavailable: 0`:** a new pod must pass readiness before an old one is removed, so a deploy never drops below two serving pods.
 - **`topologySpreadConstraints` on hostname:** one replica per node when possible. When AWS reclaims a Spot node you lose one pod, not both. `ScheduleAnyway` (not `DoNotSchedule`) keeps it working on single-node kind.
 - **Resources:** requests (50m CPU, 64Mi) are what the scheduler reserves. A memory *limit* (128Mi) caps leaks. There's no CPU limit, on purpose: CPU is compressible, and a CPU limit throttles the process even when the node has idle CPU, which shows up as latency.
+- **`securityContext`:** non-root, no capabilities, no privilege escalation, seccomp, read-only root filesystem, and no Kubernetes API token. Details and verification in §15.2.
 
 **Overlays:**
 
@@ -349,17 +350,93 @@ The **budget alert** ($10/month: email at 50% actual, 100% forecast) catches the
 
 **Why GHCR over ECR?** Free, no AWS credentials needed to build, and it pairs with keyless signing later. The cost is that the package must be public for nodes to pull it without credentials.
 
-## 15. Deferred to the DevSecOps pass
+## 15. Security controls
 
-Left out deliberately, so that pass has a real "before" to improve:
+The first version of this stack shipped deliberately unhardened (an Alpine image running as root, no `securityContext`, no scanning) so that hardening it would have a real "before". This section records what changed, what was measured, and the rules the pipeline enforces.
+
+### 15.1 The image
+
+| | Before | After |
+|---|---|---|
+| Runtime base | `alpine:3.21` (tag) | `distroless/static:nonroot` (digest) |
+| Builder base | `golang:1.26.3-alpine` (tag) | `golang:1.26.10-alpine` (digest) |
+| Size (disk / compressed) | 35 MB / 11.5 MB | 21.3 MB / 5.0 MB |
+| OS packages | 15 | 6 |
+| Runs as | root (UID 0) | UID/GID 65532 |
+| Shell | yes | none |
+| Trivy, OS packages | 0 | 0 |
+| Trivy, Go binary | 27 (15 HIGH), all in `stdlib v1.26.3` | 0 |
+
+**What fixed what.** The base-image swap fixed **zero** CVEs: Alpine 3.21.9 was already clean. All 27 findings were in Go's standard library, which is compiled *into* the binary, so no base image could remove them. A Go patch bump (1.26.3 to 1.26.10) cleared all of them. What distroless changed is **attack surface**: no shell, no package manager, no busybox, fewer packages, non-root by default. A CVE count is a snapshot of today's disclosures. Attack surface is what's still true when the next CVE is published.
+
+**Choices worth explaining:**
+
+- **`CGO_ENABLED=0`:** a static binary with no libc dependency, so it runs in an image that has no libc. With cgo on, the container would fail at start with a misleading `no such file or directory`.
+- **`distroless/static` over `scratch`:** the app calls DynamoDB over HTTPS and needs a CA bundle. Distroless provides CA certificates, tzdata, `/tmp` and a `nonroot` passwd entry; scratch provides nothing.
+- **`USER 65532:65532`, numeric:** Kubernetes `runAsNonRoot` can only verify a numeric user. The kubelet reads the image config, not the image's `/etc/passwd`, so it rejects a named user it can't resolve.
+- **Exec-form `CMD ["./server"]`:** shell form would need `/bin/sh` (absent), and would make the shell PID 1. The shell doesn't forward SIGTERM, so graceful shutdown would never run.
+- **Digest pins:** a tag is a mutable pointer in the registry; a digest is a hash of the content, and the client checks it on pull. The cost is that patched base images don't arrive until someone bumps the digest. The plan is for Dependabot to open those bumps as PRs, so updates go through review and the scanners.
+- **The binary is owned by root, the process runs as 65532:** the running app can't modify its own executable.
+- **`.dockerignore` is an allowlist:** only `go.mod`, `go.sum`, `cmd/`, `internal/`, `assets.go` and `frontend/` enter the build context. A new file, such as a stray `.env`, is excluded by default.
+- **One Go version, set in `go.mod`:** CI's `setup-go` reads it, and the Dockerfile's builder tag must match. If they differ, CI tests a different standard library from the one that ships.
+
+### 15.2 The pod
+
+`deploy/k8s/base/deployment.yaml`:
+
+| Setting | Level | Prevents |
+|---|---|---|
+| `runAsNonRoot: true` | pod | Starting any container as UID 0 |
+| `runAsUser` / `runAsGroup: 65532` | pod | Running as whatever user a future base image defaults to, or with root as the primary group |
+| `seccompProfile: RuntimeDefault` | pod | Rarely used, dangerous syscalls (many clusters default to Unconfined) |
+| `allowPrivilegeEscalation: false` | container | Gaining privilege through setuid binaries (sets `no_new_privs`) |
+| `capabilities.drop: [ALL]` | container | Using any Linux capability, such as raw sockets or `chown` |
+| `readOnlyRootFilesystem: true` | container | Writing tools or modifying files inside the container |
+| `automountServiceAccountToken: false` | pod spec | Getting a Kubernetes API credential from a compromised pod. EKS Pod Identity mounts its own token, so AWS access is unaffected |
+
+**Verified on a running pod** (`kubectl debug --target=app`, then `cat /proc/1/status`), not just read from the manifest:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `Uid` / `Gid` | `65532` ×4 | Real, effective, saved and filesystem IDs are all non-root, and the group isn't root |
+| `CapEff` / `CapBnd` | `0000000000000000` | No effective capabilities, and an empty bounding set, so none can ever be gained |
+| `NoNewPrivs` | `1` | Privilege escalation is blocked |
+| `Seccomp` | `2` | A seccomp filter is active (0 = off, 1 = strict, 2 = filter) |
+
+**Defense in depth:** because the pod sets `runAsUser: 65532`, even the old root-default Alpine image would start as UID 65532 rather than being rejected. The pod spec protects you from a bad image. That's also why admission policy (§15.4) checks the pod spec, not just the image.
+
+**Pod Security Admission:** the namespace has `pod-security.kubernetes.io/warn: restricted`. It never blocks; it prints violations on every `kubectl apply`. The app passes `restricted`. `dynamodb-local` (a third-party image, kind only) does not yet.
+
+### 15.3 Scanning policy
+
+**Principles:**
+
+1. **A gate fails only on something the PR author can fix.** A check that blocks with no remedy teaches people to bypass checks.
+2. **Every exception lives in the repo, with a reason, and an expiry where the tool supports one.** Accepted risk is a reviewed decision, not a silenced alert.
+3. **Each scanner answers one question no other scanner is answering.** Overlapping scanners mean triaging the same finding twice.
+4. **Scan the artifact that ships.** On `main`, the image is built once, scanned, pushed and signed by **digest**. What was scanned is byte-for-byte what runs.
+5. **Pin scanner versions, not vulnerability databases.** A new scanner release can add rules and break unrelated PRs, so upgrade it deliberately. The vulnerability database must stay fresh, or the scan stops being useful.
+
+| Scanner | Question it answers | Scans | **Fails the build** | Reports only | Why |
+|---|---|---|---|---|---|
+| **Gitleaks** | Was a secret committed? | Git history (the PR's commits; full history on a schedule) | Any finding | — | A pushed secret is compromised, especially in a public repo, and the only fix is to rotate it. False positives are suppressed per finding in `.gitleaksignore` |
+| **govulncheck** | Does our code *call* a vulnerable function? | Go source, with the toolchain from `go.mod` | Any reachable vulnerability | Vulnerable modules that are imported but not called | Reachability analysis has very few false positives. A reachable vulnerability is a real exposure, and the fix is almost always a version bump |
+| **Trivy** (image, `--scanners vuln`) | Does the shipped image contain known CVEs? | The built image: OS packages and the Go binary | HIGH or CRITICAL **with a fix available** (`--ignore-unfixed`) | Everything else: lower severities, and HIGH/CRITICAL with no fix yet | A fixable HIGH is cheap to fix and dangerous to ship. An unfixed one has no action the author can take; it's tracked instead, and an accepted one goes in `.trivyignore` with a reason and expiry |
+| **Checkov** | Is the infrastructure configured insecurely? | `infra/**/*.tf` | Nothing yet (soft-fail) | All findings | The first run on existing Terraform produces a backlog, much of it deliberate (public subnets, public EKS endpoint; see §14). Each finding gets fixed or gets an inline `#checkov:skip=<ID>:<reason>` next to the resource. Once the baseline is clean, switch to hard-fail so only *new* findings block |
+
+**Known gaps, and what covers them:**
+
+- **A CI secret scan detects; it doesn't prevent.** By the time a PR runs, the branch is already pushed to a public repo. Prevention happens earlier: GitHub secret scanning **push protection** (free on public repos) rejects the push, and a local Gitleaks pre-commit hook stops the commit.
+- **CVEs are disclosed against code that hasn't changed.** The PR gate stops new risk going out; it can't see new disclosures against what's already deployed. A scheduled weekly Trivy scan of the current `main` image covers that (planned).
+- **Overlap with Trivy.** Trivy can also scan for secrets and IaC problems. Those are left to Gitleaks and Checkov, so each finding has one owner.
+- **gosec (Go static analysis)** isn't adopted yet. It flags *patterns*, not known CVEs, and needs tuning to keep noise down. It's a candidate once the gates above are routine.
+
+### 15.4 Still planned
 
 | Area | Current state | Planned |
 |---|---|---|
-| Image | `alpine`, runs as root, tags not digests, shell present | Distroless, non-root UID, digest-pinned base, read-only root filesystem |
-| Pod security | No `securityContext`, no Pod Security Admission labels | `runAsNonRoot`, drop all capabilities, no privilege escalation; PSA `restricted` |
-| Supply chain | Actions pinned to major tags; images unsigned | Actions pinned by commit SHA; cosign keyless signing; Dependabot |
-| Scanning | None in CI | Gitleaks, govulncheck/gosec, Trivy (image and filesystem), Checkov |
-| Admission control | None | Kyverno: reject root or unsigned images; registry allowlist |
+| Scanning in CI | Run locally (§15.3) | The PR workflow enforces the table above |
+| Signing | Images unsigned | cosign keyless signing on `main`, using the workflow's GitHub OIDC identity, by digest |
+| Admission control | PSA `warn` only | Kyverno in kind: Audit first, then Enforce; reject pods that can run as root. Stretch: `verifyImages` rejects unsigned images |
+| Supply chain | Actions pinned to major tags | Pin actions by commit SHA; Dependabot for actions, Go modules and base-image digests |
 | Network | No NetworkPolicy | Allow app ingress only from `cloudflared` (VPC CNI network policy) |
-
-A quick Trivy scan already reports 15 HIGH findings in the Go binary (dependencies and standard library), so there's real material to start with.

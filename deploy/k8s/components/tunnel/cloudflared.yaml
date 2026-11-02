@@ -8,12 +8,18 @@
 # The token secret is created by the deploy workflow from SSM, not stored in
 # this repo:
 #   kubectl -n privatepaste create secret generic cloudflared-token --from-literal=token=...
+# and mounted as a file (volumes below), not exposed as an env var.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cloudflared
   labels:
     app.kubernetes.io/name: cloudflared
+  # Accepted Checkov findings, with reasons (docs/architecture.md section 15.3).
+  annotations:
+    checkov.io/skip1: CKV_K8S_11=No CPU limit by design; a limit throttles even when the node is idle (docs/architecture.md section 5)
+    checkov.io/skip2: CKV_K8S_15=The image is pinned by digest, so IfNotPresent always gets the same bytes; Always only adds a registry dependency
+    checkov.io/skip3: CKV2_K8S_6=NetworkPolicy is planned (docs/architecture.md section 15.4)
 spec:
   # Two connectors: Cloudflare balances across them, so a restart or a lost
   # Spot node does not take the site down.
@@ -26,6 +32,18 @@ spec:
       labels:
         app.kubernetes.io/name: cloudflared
     spec:
+      # Same hardening as the app (deploy/k8s/base/deployment.yaml). The
+      # image already runs as 65532:65532; stating it here enforces it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Makes the mounted token file group-owned by 65532, so it can be
+        # readable by this user and nobody else (defaultMode below).
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      # cloudflared never calls the Kubernetes API.
+      automountServiceAccountToken: false
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -35,24 +53,39 @@ spec:
               app.kubernetes.io/name: cloudflared
       containers:
         - name: cloudflared
-          image: cloudflare/cloudflared:2026.10.7
+          # Pinned by digest: the tag names the version, the digest guarantees
+          # the bytes (docs/architecture.md section 15.1).
+          image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
           args:
             - tunnel
             - --no-autoupdate # the image tag is the version; never self-update
             - --metrics
             - 0.0.0.0:2000
             - run
-          env:
-            # cloudflared reads the connector token from this variable.
-            - name: TUNNEL_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: cloudflared-token
-                  key: token
+            # Read the token from a file, not an env var: env vars are visible
+            # in /proc/<pid>/environ, `kubectl describe` output and crash dumps.
+            - --token-file
+            - /etc/cloudflared/token/token
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tunnel-token
+              mountPath: /etc/cloudflared/token
+              readOnly: true
           ports:
             - name: metrics
               containerPort: 2000
           # /ready returns 200 once at least one connection to Cloudflare is up.
+          # Readiness gates `kubectl rollout status` in deploy.yml, so a
+          # connector that can't reach Cloudflare fails the deploy.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 2
           livenessProbe:
             httpGet:
               path: /ready
@@ -66,3 +99,10 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+      volumes:
+        # The Secret created by deploy.yml (key "token"), as a file.
+        - name: tunnel-token
+          secret:
+            secretName: cloudflared-token
+            # Owner and group read only; the group is 65532 via fsGroup.
+            defaultMode: 0440

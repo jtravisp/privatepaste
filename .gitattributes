@@ -1,0 +1,11 @@
+# Store and check out text files with LF line endings on every OS.
+#
+# Without this, Git on Windows (core.autocrlf=true) checks files out with
+# CRLF. That breaks shell scripts run on Linux ($'\r': command not found)
+# and makes Docker/Kubernetes files differ between a laptop and CI.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
