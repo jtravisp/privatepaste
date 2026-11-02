@@ -149,11 +149,19 @@ data "aws_iam_policy_document" "github_deploy" {
     }
   }
 
-  # Hand the pre-made roles to EKS, and nothing else.
+  # Hand the pre-made roles to EKS. PassRole is limited to these three roles.
   statement {
     sid       = "PassClusterRoles"
     actions   = ["iam:PassRole", "iam:GetRole"]
     resources = [aws_iam_role.eks_cluster.arn, aws_iam_role.eks_node.arn, aws_iam_role.app.arn]
+  }
+  # CreateNodegroup checks that the node role has the policies a node needs,
+  # and EKS makes that IAM call with OUR credentials (forward access), not its
+  # own. Read-only, and on the node role only.
+  statement {
+    sid       = "ValidateNodeRole"
+    actions   = ["iam:ListAttachedRolePolicies"]
+    resources = [aws_iam_role.eks_node.arn]
   }
   # Lets the EKS stack look up the human SSO admin role to grant it kubectl
   # access, without hardcoding its generated name.
