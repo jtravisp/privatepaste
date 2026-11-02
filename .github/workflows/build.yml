@@ -288,9 +288,15 @@ jobs:
             echo "could not assume the deploy role; skipping deploy"
             echo "running=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          status=$(aws eks describe-cluster --name privatepaste --query cluster.status --output text 2>/dev/null || echo NONE)
-          echo "cluster status: $status"
-          echo "running=$([ "$status" = ACTIVE ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # "Running" means the cluster can take a deploy: the control plane
+          # AND the node group are ACTIVE. The control plane is ACTIVE for
+          # several minutes before any node exists (cluster-up mid-apply, or a
+          # failed apply), and a deploy then can only time out on Pending pods.
+          # cluster-up deploys itself once its nodes are ready.
+          cluster=$(aws eks describe-cluster --name privatepaste --query cluster.status --output text 2>/dev/null || echo NONE)
+          nodes=$(aws eks describe-nodegroup --cluster-name privatepaste --nodegroup-name default --query nodegroup.status --output text 2>/dev/null || echo NONE)
+          echo "cluster status: $cluster, node group status: $nodes"
+          echo "running=$([ "$cluster" = ACTIVE ] && [ "$nodes" = ACTIVE ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: cluster-check
