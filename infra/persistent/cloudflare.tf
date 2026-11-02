@@ -62,6 +62,7 @@ resource "cloudflare_record" "app" {
 # copy lives in GitHub secrets or in the repo. (It is also in this stack's
 # state file, one reason the state bucket is private.)
 resource "aws_ssm_parameter" "tunnel_token" {
+  #checkov:skip=CKV_AWS_337:SecureString encrypted with the AWS-managed aws/ssm key; a customer-managed key's extra key policy isn't worth its cost for one parameter
   name        = "/${var.project_name}/cloudflared/token"
   description = "Cloudflare Tunnel connector token for the in-cluster cloudflared Deployment."
   type        = "SecureString"

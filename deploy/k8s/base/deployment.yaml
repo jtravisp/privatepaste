@@ -4,6 +4,12 @@ metadata:
   name: privatepaste
   labels:
     app.kubernetes.io/name: privatepaste
+  # Accepted Checkov findings, with reasons (docs/architecture.md section 15.3).
+  annotations:
+    checkov.io/skip1: CKV_K8S_11=No CPU limit by design; a limit throttles even when the node is idle (docs/architecture.md section 5)
+    checkov.io/skip2: CKV_K8S_14=The image reference is set at deploy time by deploy.yml (kustomize edit set image), never in this file
+    checkov.io/skip3: CKV_K8S_43=Same as CKV_K8S_14; deploying by digest is planned with image signing (docs/architecture.md section 15.4)
+    checkov.io/skip4: CKV2_K8S_6=NetworkPolicy is planned (docs/architecture.md section 15.4)
 spec:
   replicas: 2
   selector:

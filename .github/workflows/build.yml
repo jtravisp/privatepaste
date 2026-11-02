@@ -1,9 +1,26 @@
-# Every pull request: vet, test and build the image (not pushed).
-# Every push to main: the same, then push the image to GHCR tagged with the
-# commit SHA, and -- if a cluster happens to be running -- deploy it.
+# CI/CD for the app. Scanning policy: docs/architecture.md section 15.3.
 #
-# Building needs no AWS access at all: GHCR authenticates with the
-# workflow's own GITHUB_TOKEN.
+#   gitleaks --+
+#   iac      --+--> image --> cluster-check --> deploy
+#   test     --+    (build, scan, push)    (main only, and only if a cluster is up)
+#
+# Every run, PR or main:
+#   - gitleaks: secrets anywhere in the git history
+#   - iac:      Checkov on Terraform, the Dockerfile, these workflows and the
+#               rendered EKS manifests
+#   - test:     go vet, go test, govulncheck (reachable vulnerabilities)
+#   - image:    build into the runner's local Docker, then Trivy: a full report
+#               in the job summary, and a gate on fixable HIGH/CRITICAL CVEs
+#
+# On main only, if every gate passed: push the same image that was scanned
+# (never rebuilt) to GHCR, tagged sha-<commit> and main, and deploy it if a
+# cluster happens to be running. A PR's image is scanned and discarded.
+#
+# Scanner versions are pinned; downloaded binaries are checked against
+# SHA-256 hashes written here, so changing a tool takes a commit.
+#
+# Building needs no AWS access: GHCR authenticates with the workflow's own
+# GITHUB_TOKEN.
 name: build
 
 on:
@@ -15,14 +32,68 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR runs, but never a run on main, which may be halfway
+# through a push or a deploy: PRs share one group per branch, while each main
+# run gets its own group (its run_id), so nothing can cancel it. Deploys still
+# take turns via the eks-deploy group in deploy.yml.
+#
+# Written this way, not `cancel-in-progress: ${{ ... }}`: Checkov's schema only
+# accepts a boolean there and silently skips the whole file otherwise.
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, not just the latest commit
+
+      # The hash is the project's published one, cross-checked against a local
+      # download when the pin was set. It lives here, not in a checksums file
+      # from the same release, so a replaced release asset fails this step.
+      - name: Install Gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        working-directory: ${{ runner.temp }}
+        run: |
+          file="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${file}"
+          echo "${GITLEAKS_SHA256}  ${file}" | sha256sum -c -
+          tar -xzf "$file" gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      # --redact: CI logs on a public repo are public; never print a finding.
+      - name: Gitleaks
+        run: gitleaks git --redact --verbose .
+
+  iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to the version that produced the clean baseline, so a new
+      # release's new checks can't fail builds unannounced. (Its Python
+      # dependencies are not pinned; accepted.)
+      - name: Install Checkov
+        run: pipx install checkov==3.4.0
+
+      # Not the kubernetes framework here: the kustomize bases and patches are
+      # fragments, not complete manifests. The next step scans what ships.
+      - name: Checkov (Terraform, Dockerfile, workflows)
+        run: checkov -d . --framework terraform,dockerfile,github_actions --compact
+
+      - name: Checkov (rendered EKS manifests)
+        run: |
+          kubectl kustomize deploy/k8s/overlays/eks > "$RUNNER_TEMP/eks-rendered.yaml"
+          checkov -f "$RUNNER_TEMP/eks-rendered.yaml" --framework kubernetes --compact
+
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -31,6 +102,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Installs the Go version in go.mod, so govulncheck checks the same
+      # standard library the image ships.
       - uses: actions/setup-go@v7
         with:
           go-version-file: app/go.mod
@@ -39,13 +112,17 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # -race: the burn-after-read test fires concurrent readers; the race
-      # detector would catch unsynchronized access in the handler or store.
       - name: Test
         run: go test -race -count=1 ./...
 
+      # Fails only on vulnerabilities the code actually reaches.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
   image:
-    needs: test
+    needs: [gitleaks, iac, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,31 +132,68 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # Build once, into the runner's local Docker. The push at the end sends
+      # these exact bytes; nothing is rebuilt after the scan.
+      - name: Build image (load locally, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: app
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Same pinning as Gitleaks. Trivy's own release was compromised in March
+      # 2026; a hash in this file turns a swapped binary into a failed step.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: 0.76.1
+          TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+        working-directory: ${{ runner.temp }}
+        run: |
+          file="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${file}"
+          echo "${TRIVY_SHA256}  ${file}" | sha256sum -c -
+          tar -xzf "$file" trivy
+          sudo mv trivy /usr/local/bin/
+
+      # Report first, so the full picture is on the run page even when the
+      # gate below fails. All severities, unfixed included; never fails.
+      - name: Trivy report (informational)
+        run: |
+          {
+            echo "### Trivy report"
+            echo '```text'
+            trivy image --exit-code 0 "$IMAGE:sha-$GITHUB_SHA"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --scanners vuln: only CVEs gate here; secrets are Gitleaks' job
+      # (one scanner per question, section 15.3). The report above still
+      # runs Trivy's default scanners, for information.
+      - name: Trivy gate (fixable HIGH/CRITICAL)
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE:sha-$GITHUB_SHA"
+
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # One tag per commit, so a deploy names exactly the code it runs and a
-      # rollback is "deploy the previous SHA". `main` floats, for humans.
-      - name: Build (and push on main)
-        uses: docker/build-push-action@v7
-        with:
-          context: app
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-          tags: |
-            ${{ env.IMAGE }}:sha-${{ github.sha }}
-            ${{ env.IMAGE }}:main
-          # Links the package to this repo on GitHub.
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Pushes both tags of the image scanned above. The digest it prints is
+      # what image signing (step 5) will sign.
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: docker push --all-tags "$IMAGE"
 
   # Continuous deployment, but only when there is somewhere to deploy to.
   cluster-check:
@@ -122,4 +236,5 @@ jobs:
       packages: read
     uses: ./.github/workflows/deploy.yml
     with:
+      # Not $GITHUB_SHA: `with:` is never run through a shell.
       image_tag: sha-${{ github.sha }}

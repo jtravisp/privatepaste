@@ -6,6 +6,8 @@
 # within a few days; the app also refuses to serve expired items).
 
 resource "aws_dynamodb_table" "pastes" {
+  #checkov:skip=CKV_AWS_28:No point-in-time recovery by design: backups would keep burned and deleted pastes for 35 days, defeating burn-after-read
+  #checkov:skip=CKV_AWS_119:Encrypted at rest with an AWS-owned key by default, and paste content is already encrypted in the browser; a customer-managed key would protect ciphertext
   name         = var.table_name
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "id"

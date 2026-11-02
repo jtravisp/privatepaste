@@ -12,6 +12,7 @@
 # Cloudflare Tunnel. A public IP with no open port is reachable by nobody.
 
 data "aws_availability_zones" "available" {
+  #checkov:skip=CKV_AWS_394:Only the first two zones are used (slice below), and the VPC is rebuilt every session, so a new zone can't silently change a running cluster
   state = "available"
 }
 
@@ -21,11 +22,22 @@ locals {
 }
 
 resource "aws_vpc" "this" {
+  #checkov:skip=CKV2_AWS_11:No flow logs: CloudWatch cost on a VPC that lives for one session and has no inbound listeners (docs/architecture.md section 12)
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true # required for nodes to register with EKS
 
   tags = { Name = "${var.cluster_name}-vpc" }
+}
+
+# Every VPC gets a default security group that allows all traffic between its
+# members. Nothing here uses it (EKS creates its own cluster security group),
+# so take it over and leave it with no rules: declaring this resource without
+# ingress/egress blocks makes Terraform delete the default rules. Destroying
+# it only removes it from state; AWS deletes it along with the VPC.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.cluster_name}-default-unused" }
 }
 
 resource "aws_internet_gateway" "this" {
@@ -34,6 +46,7 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_subnet" "public" {
+  #checkov:skip=CKV_AWS_130:Public IPs instead of a NAT gateway (cost); nothing listens on them, see the comment at the top of this file
   count = length(local.azs)
 
   vpc_id                  = aws_vpc.this.id

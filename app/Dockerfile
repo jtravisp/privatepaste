@@ -1,3 +1,4 @@
+# checkov:skip=CKV_DOCKER_2:Kubernetes ignores HEALTHCHECK and uses the Deployment's probes; distroless also has no shell or curl to run one
 # Stage 1: Build
 FROM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
 

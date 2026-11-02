@@ -6,6 +6,7 @@ name: cluster-up
 on:
   workflow_dispatch:
     inputs:
+      # checkov:skip=CKV_GHA_7:Not a build: the input only sets the cluster's expiry, and is validated as an integer from 30 to 480 and passed through an env var
       ttl_minutes:
         description: Minutes until the reaper destroys the cluster (30-480).
         type: string

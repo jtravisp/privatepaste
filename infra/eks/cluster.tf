@@ -17,6 +17,11 @@ data "aws_iam_role" "app" {
 }
 
 resource "aws_eks_cluster" "this" {
+  #checkov:skip=CKV_AWS_39:Public endpoint so GitHub-hosted runners (no fixed IPs) can deploy; every request still needs IAM plus an access entry (docs/architecture.md section 14)
+  #checkov:skip=CKV_AWS_38:Same as CKV_AWS_39; runner IPs aren't fixed, so there's no CIDR to restrict to
+  #checkov:skip=CKV_AWS_37:Control-plane logs go to CloudWatch at a cost; not worth it for a 2.5-hour cluster. A real account would enable at least audit
+  #checkov:skip=CKV_AWS_58:EKS envelope-encrypts Kubernetes API data with an AWS-owned key by default; a customer-managed key adds cost and lifecycle for one Secret whose source of truth is SSM
+  #checkov:skip=CKV_AWS_339:False positive: Checkov's version list lags EKS. upgrade_policy STANDARD below makes AWS refuse unsupported versions
   name     = var.cluster_name
   version  = var.kubernetes_version
   role_arn = data.aws_iam_role.cluster.arn

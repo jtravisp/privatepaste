@@ -55,6 +55,7 @@ locals {
 # compromised workflow can create and destroy one cluster; it cannot grant
 # itself new permissions.
 data "aws_iam_policy_document" "github_deploy" {
+  #checkov:skip=CKV_AWS_356:Remaining "*" resources can't be scoped: Describe/List calls and iam:ListRoles don't support resource ARNs, new VPC resources have no ARN yet (actions and region limit them instead), and kms:Decrypt is limited by kms:ViaService
   # Terraform state: the eks/ prefix only. CI cannot read or alter this
   # persistent stack's state.
   statement {
@@ -92,17 +93,54 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = ["*"]
   }
 
-  # Networking for the cluster's VPC. EC2 resource-level permissions for VPC
-  # creation are awkward (a new VPC has no ARN to name in advance), so this is
-  # scoped by action family and region rather than by resource. Tag-based
-  # conditions would tighten it further.
+  # Networking for the cluster's VPC (infra/eks/network.tf).
+  #
+  # Resource is "*" because a VPC, subnet or route table that doesn't exist
+  # yet has no ARN to name. What limits this statement instead:
+  #   - Explicit actions: exactly the calls Terraform makes for the resource
+  #     types in network.tf. Wildcards like ec2:*Vpc* also matched VPC
+  #     peering and VPC endpoint services, which can open the network to
+  #     other accounts.
+  #   - Region.
+  # Not used: tag conditions (aws:ResourceTag/project). AWS creates the
+  # default security group and main route table untagged, and a role that
+  # may tag resources can tag its way into the condition, so they add
+  # complexity for little gain here. The next step is evidence: generate a
+  # policy from CloudTrail with IAM Access Analyzer after a cluster-up/down
+  # cycle, and compare it with this list.
   statement {
     sid = "Ec2Networking"
     actions = [
-      "ec2:*Vpc*", "ec2:*Subnet*", "ec2:*InternetGateway*", "ec2:*RouteTable*", "ec2:*Route",
-      "ec2:*SecurityGroup*", "ec2:CreateTags", "ec2:DeleteTags", "ec2:Describe*",
-      "ec2:*NetworkInterface*",
+      # aws_vpc
+      "ec2:CreateVpc", "ec2:ModifyVpcAttribute", "ec2:DeleteVpc",
+      # aws_internet_gateway
+      "ec2:CreateInternetGateway", "ec2:AttachInternetGateway",
+      "ec2:DetachInternetGateway", "ec2:DeleteInternetGateway",
+      # aws_subnet
+      "ec2:CreateSubnet", "ec2:ModifySubnetAttribute", "ec2:DeleteSubnet",
+      # aws_route_table, aws_route_table_association
+      "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
+      "ec2:CreateRoute", "ec2:ReplaceRoute", "ec2:DeleteRoute",
+      "ec2:AssociateRouteTable", "ec2:DisassociateRouteTable",
+      "ec2:ReplaceRouteTableAssociation",
+      # aws_default_security_group: strip the default rules
+      "ec2:RevokeSecurityGroupIngress", "ec2:RevokeSecurityGroupEgress",
+      # Tags, including tag-on-create and the expires-at tag on re-apply
+      "ec2:CreateTags", "ec2:DeleteTags",
+      # The AWS provider removes leftover ENIs that block subnet deletion
+      "ec2:DetachNetworkInterface", "ec2:DeleteNetworkInterface",
     ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+  }
+  # Read-only, and EC2 Describe calls don't support resource-level scoping.
+  statement {
+    sid       = "Ec2Describe"
+    actions   = ["ec2:Describe*"]
     resources = ["*"]
     condition {
       test     = "StringEquals"
