@@ -267,7 +267,7 @@ Destroy runs in reverse.
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `build.yml` | every PR, every push to `main` | `go vet`, `go test -race`, build image. On `main`: push `sha-<commit>` and `main` tags to GHCR; if the cluster is ACTIVE, call `deploy.yml` |
+| `build.yml` | every PR, every push to `main` | Security gates in parallel (Gitleaks, Checkov, `go vet` + `go test -race` + govulncheck), then build the image and scan it with Trivy. On `main`, if every gate passed: push that same image as `sha-<commit>` and `main` to GHCR; if the cluster is ACTIVE, call `deploy.yml` (§15.3) |
 | `deploy.yml` | called by `build` and `cluster-up` | Wait for the image, set the tunnel Secret from SSM, `kustomize edit set image`, apply, wait for rollout, smoke-test `https://privatepasteapp.com/readyz` |
 | `cluster-up.yml` | manual, input `ttl_minutes` (default 150) | Compute `expires_at`, `terraform apply` the eks stack, call `deploy.yml` |
 | `cluster-down.yml` | manual, or called by the reaper | Delete any Kubernetes-provisioned AWS resources, then `terraform destroy` |
@@ -276,7 +276,8 @@ Destroy runs in reverse.
 **Points worth explaining:**
 
 - **Commit to production:** a merge to `main` runs tests, builds and pushes `sha-<commit>`. If a cluster is up, it deploys that exact tag and verifies it end to end through the public URL. If no cluster is up, the image waits in GHCR, and the next `cluster-up` deploys the head of `main`.
-- **Concurrency groups:** `eks-terraform` serializes apply and destroy (the reaper can't destroy mid-apply), and `eks-deploy` serializes rollouts. `-lock-timeout=20m` covers the state lock as a second layer.
+- **Concurrency groups:** `eks-terraform` serializes apply and destroy (the reaper can't destroy mid-apply), and `eks-deploy` serializes rollouts. `-lock-timeout=20m` covers the state lock as a second layer. In `build`, a new push to a PR cancels that PR's previous run, but a run on `main` is never cancelled: each gets its own group, so a push or deploy can't be stopped halfway.
+- **Gates before shipping:** nothing is pushed unless Gitleaks, Checkov, the tests, govulncheck and the Trivy gate all passed, and branch protection makes the same checks required for merging (§15.3).
 - **Extending a session:** re-running `cluster-up` re-applies with a later `expires_at`, which only changes tags, and redeploys.
 - **Input handling:** `ttl_minutes` reaches the shell through an environment variable, never interpolated into the script text, and is validated as an integer from 30 to 480.
 - **Least-privilege tokens:** the workflow default is `contents: read`. Only jobs that need it get `packages: write` (push) or `id-token: write` (AWS).
@@ -419,13 +420,39 @@ The first version of this stack shipped deliberately unhardened (an Alpine image
 
 | Scanner | Question it answers | Scans | **Fails the build** | Reports only | Why |
 |---|---|---|---|---|---|
-| **Gitleaks** | Was a secret committed? | Git history (the PR's commits; full history on a schedule) | Any finding | — | A pushed secret is compromised, especially in a public repo, and the only fix is to rotate it. False positives are suppressed per finding in `.gitleaksignore` |
+| **Gitleaks** | Was a secret committed? | The full git history, every run (seconds at this size) | Any finding | — | A pushed secret is compromised, especially in a public repo, and the only fix is to rotate it. False positives are suppressed per finding in `.gitleaksignore` |
 | **govulncheck** | Does our code *call* a vulnerable function? | Go source, with the toolchain from `go.mod` | Any reachable vulnerability | Vulnerable modules that are imported but not called | Reachability analysis has very few false positives. A reachable vulnerability is a real exposure, and the fix is almost always a version bump |
 | **Trivy** (image, `--scanners vuln`) | Does the shipped image contain known CVEs? | The built image: OS packages and the Go binary | HIGH or CRITICAL **with a fix available** (`--ignore-unfixed`) | Everything else: lower severities, and HIGH/CRITICAL with no fix yet | A fixable HIGH is cheap to fix and dangerous to ship. An unfixed one has no action the author can take; it's tracked instead, and an accepted one goes in `.trivyignore` with a reason and expiry |
-| **Checkov** | Is the infrastructure configured insecurely? | `infra/**/*.tf` | Nothing yet (soft-fail) | All findings | The first run on existing Terraform produces a backlog, much of it deliberate (public subnets, public EKS endpoint; see §14). Each finding gets fixed or gets an inline `#checkov:skip=<ID>:<reason>` next to the resource. Once the baseline is clean, switch to hard-fail so only *new* findings block |
+| **Checkov** | Is the infrastructure configured insecurely? | Terraform, the Dockerfile and the workflows; and the **rendered** EKS manifests (`kubectl kustomize`), not the kustomize fragments | Any finding | — | The first run produced a backlog, much of it deliberate (public subnets, public EKS endpoint; see §14). Each finding was fixed or given an inline skip with its reason (`#checkov:skip=<ID>:<reason>`, or a `checkov.io/skipN` annotation in manifests). With the baseline clean, it hard-fails, so only *new* findings block |
+
+**How it runs in CI** (`.github/workflows/build.yml`):
+
+```
+gitleaks --+
+iac      --+--> image --> cluster-check --> deploy
+test     --+    build, Trivy, push    main only, if a cluster is up
+```
+
+- **Gates in parallel, then `image`.** `image` needs all three, so nothing is built for shipping unless every gate passed.
+- **Build once, scan, push the same bytes.** The image is built into the runner's local Docker, scanned, and on `main` pushed with `docker push`. It is never rebuilt after the scan, because a rebuild is only *probably* identical. A PR's image is scanned and discarded.
+- **Trivy runs twice.** First a report with every severity, written to the job summary and never failing, so the full picture is there even when the gate fails. Then the gate, with the flags in the table.
+- **Required checks.** A ruleset on `main` requires a pull request, requires `gitleaks`, `iac`, `test` and `image` to pass on a branch that is up to date with `main`, and blocks force pushes and deletion. Without that, a red check is advice and the Merge button still works. `cluster-check` and `deploy` are deliberately not required: they never run on PRs, and they decide whether a deploy works, not what may enter `main`.
+- **Why the gates also run on `main`.** Each run is a fresh VM. The merge commit is code no PR check saw (main plus the PR, plus anything merged in between), and a CVE can be disclosed between the PR's run and the merge.
+
+**Scanner versions:**
+
+| Tool | Version | How it's installed and verified |
+|---|---|---|
+| Gitleaks | 8.30.1 | Release tarball, checked against a SHA-256 written in the workflow |
+| Trivy | 0.76.1 | Same. Trivy's own release was compromised in March 2026; with a hash in the repo, a swapped binary fails the step instead of running |
+| govulncheck | v1.9.0 | `go install`; the Go checksum database verifies it |
+| Checkov | 3.4.0 | `pipx install checkov==3.4.0`; its Python dependencies are not pinned (accepted) |
+
+A version number names a release; only a hash proves the bytes. The hashes are not taken from a `checksums.txt` downloaded from the same release, because whoever can replace the binary can replace that file too. Each was computed from a local download and compared with the project's published value when the pin was set: trust on first use. From then on, changing a tool takes a commit. Verifying Trivy's cosign signature would remove the first-use gap.
 
 **Known gaps, and what covers them:**
 
+- **A gate can pass by scanning nothing.** Checkov validates each workflow against a schema and silently skips a file that fails it: `cancel-in-progress: ${{ ... }}` was enough to make it skip `build.yml`, the file that defines the gates. It was caught by counting checks per file. The workaround is in `build.yml`'s concurrency comment. A "0 failed" summary is only evidence if the scanner actually read the file.
 - **A CI secret scan detects; it doesn't prevent.** By the time a PR runs, the branch is already pushed to a public repo. Prevention happens earlier: GitHub secret scanning **push protection** (free on public repos) rejects the push, and a local Gitleaks pre-commit hook stops the commit.
 - **CVEs are disclosed against code that hasn't changed.** The PR gate stops new risk going out; it can't see new disclosures against what's already deployed. A scheduled weekly Trivy scan of the current `main` image covers that (planned).
 - **Overlap with Trivy.** Trivy can also scan for secrets and IaC problems. Those are left to Gitleaks and Checkov, so each finding has one owner.
@@ -435,7 +462,6 @@ The first version of this stack shipped deliberately unhardened (an Alpine image
 
 | Area | Current state | Planned |
 |---|---|---|
-| Scanning in CI | Run locally (§15.3) | The PR workflow enforces the table above |
 | Signing | Images unsigned | cosign keyless signing on `main`, using the workflow's GitHub OIDC identity, by digest |
 | Admission control | PSA `warn` only | Kyverno in kind: Audit first, then Enforce; reject pods that can run as root. Stretch: `verifyImages` rejects unsigned images |
 | Supply chain | Actions pinned to major tags | Pin actions by commit SHA; Dependabot for actions, Go modules and base-image digests |

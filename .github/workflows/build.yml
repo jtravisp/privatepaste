@@ -13,8 +13,10 @@
 #               in the job summary, and a gate on fixable HIGH/CRITICAL CVEs
 #
 # On main only, if every gate passed: push the same image that was scanned
-# (never rebuilt) to GHCR, tagged sha-<commit> and main, and deploy it if a
-# cluster happens to be running. A PR's image is scanned and discarded.
+# (never rebuilt) to GHCR, tagged sha-<commit> and main; sign its digest with
+# cosign (keyless, as this workflow's GitHub identity) and verify the
+# signature; then deploy it if a cluster happens to be running. A PR's image
+# is scanned and discarded.
 #
 # Scanner versions are pinned; downloaded binaries are checked against
 # SHA-256 hashes written here, so changing a tool takes a commit.
@@ -126,7 +128,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # push to ghcr.io/<owner>/<repo>
+      packages: write # push the image and its signature to ghcr.io/<owner>/<repo>
+      id-token: write # request a GitHub OIDC token: the identity Fulcio certifies for keyless signing
+    outputs:
+      # The full reference, ghcr.io/<owner>/<repo>@sha256:..., for deploying
+      # by digest. Empty on PRs, which push nothing.
+      image_ref: ${{ steps.ref.outputs.ref }}
     steps:
       - uses: actions/checkout@v7
 
@@ -189,11 +196,69 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pushes both tags of the image scanned above. The digest it prints is
-      # what image signing (step 5) will sign.
+      # Pushes both tags of the image scanned above. Both point to one digest,
+      # so the single signature below covers both.
       - name: Push to GHCR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker push --all-tags "$IMAGE"
+
+      # The registry's digest of what was just pushed, as a full reference.
+      # Signing and deploying use this, never a tag: a tag can be moved (even
+      # by another run in the seconds before signing), a digest can't.
+      - name: Get image reference
+        id: ref
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:sha-$GITHUB_SHA")
+          case "$ref" in
+            "$IMAGE@sha256:"*) ;;
+            *) echo "::error::unexpected image reference: $ref"; exit 1 ;;
+          esac
+          echo "Pushed: $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      # Same pinning as the scanners.
+      - name: Install cosign
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          COSIGN_VERSION: 3.1.4
+          COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+        working-directory: ${{ runner.temp }}
+        run: |
+          file="cosign-linux-amd64"
+          curl -sSfLO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${file}"
+          echo "${COSIGN_SHA256}  ${file}" | sha256sum -c -
+          chmod +x "$file"
+          sudo mv "$file" /usr/local/bin/cosign
+
+      # Keyless: cosign makes a throwaway key pair, trades this job's OIDC
+      # token for a 10-minute Fulcio certificate naming this workflow, signs
+      # the digest, records it in the public Rekor log, and stores the
+      # signature in GHCR next to the image. --yes accepts the prompt about
+      # publishing to Rekor, which would otherwise block in CI.
+      #
+      # If this fails, the image is already pushed but unsigned; the job fails,
+      # so nothing deploys it, and signature verification would reject it.
+      - name: Sign image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: cosign sign --yes "$IMAGE_REF"
+
+      # Check the signature the way any consumer will. The identity is written
+      # out in full, not built from this run's context: a verification policy
+      # is fixed in advance, so a workflow on another branch, or another
+      # workflow file, can't produce a signature that passes.
+      - name: Verify signature
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/jtravisp/privatepaste/.github/workflows/build.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_REF" > /dev/null
+          echo "Signature verified for $IMAGE_REF"
 
   # Continuous deployment, but only when there is somewhere to deploy to.
   cluster-check:
