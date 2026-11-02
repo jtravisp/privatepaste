@@ -19,7 +19,7 @@ metadata:
   annotations:
     checkov.io/skip1: CKV_K8S_11=No CPU limit by design; a limit throttles even when the node is idle (docs/architecture.md section 5)
     checkov.io/skip2: CKV_K8S_15=The image is pinned by digest, so IfNotPresent always gets the same bytes; Always only adds a registry dependency
-    checkov.io/skip3: CKV2_K8S_6=NetworkPolicy is planned (docs/architecture.md section 15.4)
+    checkov.io/skip3: CKV2_K8S_6=NetworkPolicy is planned (docs/architecture.md section 15.5)
 spec:
   # Two connectors: Cloudflare balances across them, so a restart or a lost
   # Spot node does not take the site down.
